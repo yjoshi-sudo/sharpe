@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sharpe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f5f6f8; --surface:#ffffff; --surface-2:#f0f2f5; --line:#dde1e6;
+  --text:#1b1f24; --muted:#5f6670; --macro-bg:#e3ecfa; --macro-text:#1d4f91;
+  --market:#3f6fd8; --sector:#2f8f86; --company:#d9534f;
+  --high-bg:#fbe3e2; --high-text:#a8322e; --med-bg:#fbefd9; --med-text:#9a6206;
+  --low-bg:#eceef1; --low-text:#4a515a; --link:#2f62c9; --focus:#2f62c9;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{background:#f5f6f8}
+body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"IBM Plex Sans",-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.5;font-variant-numeric:tabular-nums}
+.wrap{max-width:1180px;margin:0 auto;padding:28px 20px 40px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+h1{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:2px 0 0;font-size:16px}
+.note{font-size:13px;color:var(--muted);margin-top:6px}
+select{font:inherit;font-size:17px;color:var(--text);background:var(--surface);border:1px solid var(--line);
+  border-radius:10px;padding:10px 14px;min-width:230px;cursor:pointer}
+select:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+.macro{background:var(--macro-bg);color:var(--macro-text);border-radius:12px;padding:14px 18px;margin:20px 0 18px}
+.macro-summary{font-size:16px;font-weight:500;margin:0 0 10px}
+.events{display:flex;flex-wrap:wrap;gap:8px}
+.ev{background:color-mix(in srgb,var(--surface) 12%,transparent);border:1px solid color-mix(in srgb,var(--macro-text) 30%,transparent);
+  border-radius:8px;padding:6px 10px;font-size:13px;line-height:1.35}
+.ev b{font-weight:600}
+.ev .res{display:block;opacity:.8}
+.ev.ctx{opacity:.7;border-style:dashed}
+.ev .verify{font-style:italic}
+
+.legend{display:flex;flex-wrap:wrap;gap:18px;font-size:13px;color:var(--muted);margin:0 0 10px}
+.legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:var(--c)}
+
+.tablebox{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow-x:auto}
+.grid{min-width:940px}
+.row{display:grid;grid-template-columns:90px 80px 92px 92px 140px 1fr 150px;align-items:center;gap:8px;padding:0 22px}
+.head{color:var(--muted);font-size:14px;height:52px;border-bottom:1px solid var(--line)}
+.head div:nth-child(n+2):nth-child(-n+5),.num{text-align:right}
+.item{border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+button.row{width:100%;background:none;border:0;color:inherit;font:inherit;text-align:left;min-height:64px;cursor:pointer}
+button.row:hover{background:var(--surface-2)}
+.tk{font-weight:600;font-size:16px}
+.tk small{display:block;font-weight:400;font-size:12px;color:var(--muted)}
+.big{color:var(--company);font-weight:600}
+.sig{font-size:12px;color:var(--muted)}
+.headline{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{justify-self:end;border-radius:999px;padding:4px 14px;font-size:14px;font-weight:500;text-align:center;min-width:96px}
+.High{background:var(--high-bg);color:var(--high-text)}
+.Medium{background:var(--med-bg);color:var(--med-text)}
+.Low{background:var(--low-bg);color:var(--low-text)}
+
+.card{display:none;padding:6px 22px 24px;background:var(--surface)}
+.item.open .card{display:block}
+.item.open button.row{background:var(--surface-2)}
+.cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:28px;margin-top:14px}
+h3{font-size:16px;font-weight:600;margin:0 0 10px}
+.layer{display:grid;grid-template-columns:84px 1fr;gap:10px;margin:0 0 8px}
+.layer .lab{color:var(--muted)}
+.ec{margin:16px 0 0}
+.ec dl{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;margin:0;font-size:14px}
+.ec dt{color:var(--muted)} .ec dd{margin:0}
+.howto{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:0 0 14px;font-size:14px}
+.howto summary{cursor:pointer;font-weight:600;font-size:15px}
+.howto ol{margin:10px 0 0;padding-left:20px} .howto li{margin:0 0 6px;max-width:80ch}
+.ecsum{margin:0;padding-left:18px;font-size:14px} .ecsum li{margin:0 0 4px}
+.prov{display:block;font-size:12px;color:var(--muted)}
+.datasrc{margin-top:16px} .datasrc ul{margin:10px 0 0;padding-left:20px} .datasrc li{margin:0 0 6px;max-width:85ch}
+.thesis{margin:12px 0 0;padding:10px 12px;background:var(--surface-2);border-radius:8px;font-size:14px;max-width:110ch}
+.vct{color:var(--sector);border-color:var(--sector)}
+.detail{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.srct{color:var(--text);border-color:var(--muted)}
+.chan{font-size:12px;border:1px solid var(--line);border-radius:6px;padding:1px 6px;margin-left:6px;color:var(--muted);white-space:nowrap}
+a{color:var(--link)}
+.empty{color:var(--muted);font-style:italic}
+.why{margin:18px 0 0}
+.why p{margin:0;max-width:70ch}
+
+.bars{display:grid;gap:9px}
+.bar{display:grid;grid-template-columns:118px 1fr 62px;align-items:center;gap:10px;font-size:14px}
+.track{position:relative;height:14px;background:var(--surface-2);border-radius:3px}
+.track::after{content:"";position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:var(--muted);opacity:.6}
+.fill{position:absolute;top:0;bottom:0;border-radius:2px;background:var(--c)}
+.bar .v{text-align:right}
+.bar.total{border-top:1px solid var(--line);padding-top:9px;font-weight:600}
+.verdict{margin-top:14px;padding:10px 12px;border-left:3px solid var(--vc);background:var(--surface-2);border-radius:0 8px 8px 0;font-size:14px}
+
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:22px}
+.tile{background:var(--surface-2);border-radius:10px;padding:12px 14px}
+.tile .t{color:var(--muted);font-size:13px}
+.tile .s{font-size:20px;font-weight:600}
+.tile .d{font-size:12px;color:var(--muted);margin:4px 0 2px;line-height:1.35}
+.summary{font-size:16px;margin:0 0 12px}
+.fn{font-size:13px;color:var(--muted);margin:14px 0 0}
+.tile .r{font-size:12px;font-weight:500;margin-top:4px}
+.foot{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-top:16px;color:var(--muted);font-size:13px}
+.sources{margin-top:16px;font-size:14px}
+.sources ol{margin:6px 0 0;padding-left:22px}
+.disclaimer{color:var(--muted);font-size:13px;margin-top:14px}
+.demo{display:inline-block;font-size:12px;border:1px dashed var(--muted);border-radius:6px;padding:2px 8px;color:var(--muted);margin-top:8px}
+@media (max-width:760px){
+  .cols{grid-template-columns:1fr}
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  h1{font-size:22px}
+}
+@media (prefers-reduced-motion:no-preference){ .item.open .card{animation:open .18s ease-out} @keyframes open{from{opacity:0;transform:translateY(-4px)}to{opacity:1}} }
+
+.ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button.p,label.p,.field,textarea{font:inherit;font-size:15px;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:9px 14px}
+button.p,label.p{background:var(--company);border-color:var(--company);color:#fff;font-weight:500;cursor:pointer}button.p.ghost{background:var(--surface);color:var(--text);border-color:var(--line)}button.p:disabled{opacity:.5;cursor:default}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0}.chip{font-size:12px;border:1px solid var(--line);border-radius:99px;padding:2px 10px;color:var(--muted);background:var(--surface)}.chip.ok{color:var(--sector);border-color:var(--sector)}.chip.no{color:var(--med-text);border-color:var(--med-text)}
+.prog{height:4px;background:var(--line);border-radius:2px;overflow:hidden;margin:12px 0 0}.prog i{display:block;height:100%;width:0;background:var(--company);transition:width .3s}
+.warn{background:var(--med-bg);color:var(--med-text);border-radius:10px;padding:8px 14px;font-size:14px;margin:12px 0 0}
+.hide{display:none!important}.empty-state{padding:28px 22px;color:var(--muted)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin-bottom:14px}.panel h3{margin:0 0 10px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0 14px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px}
+.hb{display:grid;grid-template-columns:56px 1fr 52px;gap:10px;align-items:center;margin:9px 0;font-size:14px}.hb .rb{height:14px;background:var(--surface-2);border-radius:3px;overflow:hidden}.hb .rb i{display:block;height:100%;background:var(--company);border-radius:2px}
+table.t{width:100%;border-collapse:collapse;font-size:14px}table.t th,table.t td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line)}table.t th:first-child,table.t td:first-child{text-align:left}table.t th{color:var(--muted);font-weight:500}
+svg{width:100%;height:auto;display:block}.lg{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:8px}.lg b{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px}
+.hold textarea{width:100%;min-height:60px;margin-top:8px}.hold .hr{display:grid;grid-template-columns:100px 100px 1fr auto;gap:10px}.hold input{width:100%}
+@media(max-width:760px){.hold .hr{grid-template-columns:1fr 1fr}}
+
+.skip{position:absolute;left:-9999px;top:8px;background:var(--surface);color:var(--text);border:2px solid var(--focus);border-radius:8px;padding:8px 14px;z-index:10}
+.skip:focus{left:12px}
+.tabs{display:flex;gap:6px;margin:22px 0 4px;border-bottom:2px solid var(--line)}
+.tabs button{appearance:none;background:transparent;border:0;border-bottom:4px solid transparent;margin-bottom:-2px;border-radius:10px 10px 0 0;
+  padding:12px 26px;min-height:48px;min-width:112px;font:inherit;font-size:17px;font-weight:600;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px}
+.tabs button:hover{background:var(--surface-2);color:var(--text)}
+.tabs button[aria-selected="true"]{color:var(--text);background:var(--surface);border-bottom-color:var(--company);box-shadow:0 -1px 0 var(--line) inset}
+.tabs button:focus-visible{outline:3px solid var(--focus);outline-offset:-3px}
+.tabs button .ico{width:18px;height:18px;flex:none}
+[role="tabpanel"]:focus-visible{outline:2px solid var(--focus);outline-offset:4px;border-radius:6px}
+.foot-status{margin-top:26px;padding-top:14px;border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--muted)}
+@media(max-width:560px){.tabs button{flex:1;min-width:0;padding:12px 6px;font-size:15px}.tabs button .ico{display:none}}
+@media (forced-colors:active){.tabs button[aria-selected="true"]{border-bottom:4px solid Highlight}}
+.pos{color:var(--sector)}.neg{color:var(--company)}.insights{margin:0;padding-left:20px;font-size:15px}.insights li{margin:0 0 6px}
+@media(max-width:640px){.compgrid{grid-template-columns:1fr!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap" id="main">
+  <header>
+    <div>
+      <h1>Portfolio brief</h1>
+      <p class="sub">What changed, why it may matter, what to look at first</p>
+    </div>
+    <div class="ctl hide" id="briefCtl">
+      <label><span class="sr" style="position:absolute;left:-9999px">Trading day</span>
+      <select id="day" aria-label="Trading day"></select></label>
+      <button class="p" id="run">Run analysis</button>
+    </div>
+  </header>
+  <nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tab-port" data-v="port" aria-controls="v-port" aria-selected="true" tabindex="0" class="on"><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 16.5h14"/><path d="M5 16V9M10 16V4M15 16v-5"/></svg><span>Portfolio</span></button><button role="tab" id="tab-brief" data-v="brief" aria-controls="v-brief" aria-selected="false" tabindex="-1" class=""><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="2"/><path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4"/></svg><span>Brief</span></button><button role="tab" id="tab-set" data-v="set" aria-controls="v-set" aria-selected="false" tabindex="-1" class=""><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/><circle cx="7" cy="6" r="1.6" fill="var(--surface)"/><circle cx="13" cy="10" r="1.6" fill="var(--surface)"/><circle cx="8" cy="14" r="1.6" fill="var(--surface)"/></svg><span>Holdings</span></button></nav>
+  <div class="prog hide" id="prog" role="progressbar" aria-label="Analysis progress"><i></i></div>
+  <p class="note" id="msg" role="status" aria-live="polite"></p>
+
+<div id="v-start" class="hide">
+  <section class="macro" style="margin-top:22px">
+    <p class="macro-summary">Start by uploading your portfolio.</p>
+    <p style="margin:0;font-size:14px">A CSV with one row per holding, or a positions export straight from your broker (Symbol, Description, Quantity, Market Value…; title, cash and total rows are skipped). Only <b>ticker</b> is required. Optional columns: <b>shares</b> (or <b>weight</b> / <b>value</b>), <b>name</b>, <b>sector_etf</b>, <b>thesis</b>, <b>value_chain</b>. Missing names and sector ETFs are looked up for you.</p>
+  </section>
+  <div class="panel" id="drop" style="text-align:center;padding:30px 20px;border-style:dashed">
+    <p style="margin:0 0 12px">Drag a CSV here, or</p>
+    <div class="ctl" style="justify-content:center"><label class="p" style="cursor:pointer;display:inline-block">Choose file<input type="file" id="file" accept=".csv,text/csv" style="display:none"></label>
+    <button class="p ghost" id="useSample">Use the sample portfolio</button><a href="/sample.csv" style="font-size:14px">Download sample CSV</a><a href="/sample_brokerage.csv" style="font-size:14px">Download brokerage-style sample</a></div>
+    <p class="sig" id="upmsg" style="margin:12px 0 0"></p>
+  </div>
+  <div id="preview" class="hide">
+    <div id="upwarns"></div>
+    <div class="panel"><h3>Review your holdings</h3><div style="overflow-x:auto"><table class="t" id="ptable"></table></div>
+    <p class="sig" style="margin:10px 0 0">Weights come from shares × latest price (or your weight/value column). You can edit names, ETFs and theses later under Holdings.</p></div>
+    <div class="ctl"><button class="p" id="confirm">Confirm and start</button><button class="p ghost" id="cancelUp">Cancel</button></div>
+  </div>
+</div>
+
+<div id="v-brief" class="hide" role="tabpanel" aria-labelledby="tab-brief" tabindex="0">
+  <div id="warns" role="status" aria-live="polite"></div>
+  <section class="macro" aria-label="Macro today">
+    <p class="macro-summary" id="macroSummary">Pick a trading day and run the analysis.</p>
+    <div class="events" id="events"></div>
+  </section>
+
+  <details class="howto" id="howto" hidden>
+    <summary>How earnings calls are processed</summary>
+    <ol>
+      <li><b>Get the inputs.</b> Earnings date and timing (before open or after close), reported vs estimated EPS, and the call transcript.</li>
+      <li><b>Extract from the transcript.</b> Chunk and retrieve the guidance, outlook, margin, and demand sections (Lab 3 approach), then return guidance, key metrics, tone, top Q&amp;A theme, and what is new vs the last call as JSON.</li>
+      <li><b>Score it.</b> Guidance raised or cut, or an EPS surprise of 5% or more = impact 3. Guidance maintained with a tone shift = 2. In line with no change = 1. New information comes from what is new vs the last call.</li>
+      <li><b>Assign it to the right trading day.</b> After-close calls are matched to the next trading day's return; pre-market calls to the same day.</li>
+      <li><b>Evaluate it.</b> A call with a large report-day company-specific move should come out High.</li>
+    </ol>
+  </details>
+  <p class="summary" id="summary"></p>
+  <div class="legend">
+    <span style="--c:var(--market)">Broad market: move explained by SPY</span>
+    <span style="--c:var(--sector)">Sector part: sector ETF beyond the market</span>
+    <span style="--c:var(--company)">Company-specific: what neither explains</span>
+  </div>
+  <div class="tablebox"><div class="grid" id="grid">
+    <div class="row head" role="row">
+      <div>Holding</div><div>Return</div><div>Broad market</div><div>Sector</div><div>Company-specific</div><div>What changed</div><div style="text-align:right">Attention</div>
+    </div>
+    <div class="empty-state item" id="emptyRows">No analysis yet.</div>
+  </div></div>
+
+  <details class="howto datasrc">
+    <summary>Where the data comes from</summary>
+    <ul>
+      <li><b>Company, sector, and macro news:</b> Alpha Vantage News &amp; Sentiment API, filtered by ticker and date (Sep 11–17), plus economy topics for macro. Each article keeps its publisher, timestamp, and URL, which become the source links.</li>
+      <li><b>SEC filings:</b> 8-Ks for NVDA, GOOG, JPM, XOM and 6-Ks for TSM from SEC EDGAR (data.sec.gov), filed in the window.</li>
+      <li><b>Earnings calls:</b> transcripts from Alpha Vantage's earnings-call transcript endpoint; reported vs estimated EPS from its earnings endpoint.</li>
+      <li><b>Prices:</b> daily prices for the five stocks, SPY, SMH, XLC, XLF, XLE from Alpha Vantage (~100 trading days for the regression).</li>
+      <li><b>Economic calendar:</b> release dates and results from federalreserve.gov, bls.gov, census.gov, dol.gov, and eia.gov.</li>
+      <li><b>In this prototype:</b> all text, numbers, and links are illustrative placeholders until the pipeline output is loaded.</li>
+    </ul>
+  </details>
+  <p class="disclaimer">Research priority, not a buy or sell recommendation. Returns and the market / sector / company split are computed in Python from price data (two-factor regression on ~100 prior trading days). Attention rule: company-specific move ≥ 2σ with new, high-impact company news = High; large move without news = Medium (unexplained); high-impact news without a large move = Medium; otherwise Low. Holdings with the same level are ordered by thesis relevance. The 2σ threshold means about 1 in 20 ordinary days crosses it by chance, so some flags may be noise. NVDA and TSM are large holdings in SMH, which understates their company-specific moves. Sector items tagged "Value chain" are news about a customer, supplier, or input (e.g., a cloud provider's capex for NVDA and TSM, or oil supply for XOM). Company items come from news, SEC 8-K filings (6-K for TSM, a foreign filer), and earnings calls; 8-K item codes inform the impact score. The broad-market part reflects overall market mood as well as economic releases.</p>
+</div>
+
+<div id="v-port" role="tabpanel" aria-labelledby="tab-port" tabindex="0">
+  <div id="ovout" style="margin-top:18px"><p class="sig">Loading portfolio overview…</p></div>
+  <details class="howto" style="margin-top:6px">
+    <summary>Optional what-if: try a different mix of these holdings</summary>
+    <p class="sig" style="margin:10px 0 0">Back-tests alternative weightings (including one that maximizes the Sharpe ratio) against your current mix. Past data only, and a short hold-out: an exploration tool, not a recommendation.</p>
+    <div class="ctl" style="margin-top:18px">
+    <label>Min <input class="field" id="lo" type="number" value="5" style="width:70px"> %</label>
+    <label>Max <input class="field" id="hi" type="number" value="40" style="width:70px"> %</label>
+    <label>Risk-free <input class="field" id="rf" type="number" value="3.6" step="0.1" style="width:70px"> %</label>
+    <label>Hold-out days <input class="field" id="ho" type="number" value="20" style="width:70px"></label>
+    <button class="p" id="opt">Optimize</button><span class="sig" id="omsg"></span></div>
+  <div id="pout"></div>
+  </details>
+</div>
+
+<div id="v-set" class="hide hold" role="tabpanel" aria-labelledby="tab-set" tabindex="0">
+  <p class="sub" style="margin:18px 0 12px;font-size:14px">The thesis and value chain feed the LLM scoring prompts. Saved to <code>holdings.json</code>.</p>
+  <div id="hold"></div>
+  <div class="ctl"><button class="p ghost" id="reup">Upload a new portfolio CSV</button><button class="p ghost" id="add">+ Add holding</button><button class="p" id="save">Save</button><span class="sig" id="smsg"></span></div>
+</div>
+<div class="foot-status" role="contentinfo" aria-label="Data sources"><span>Data sources:</span><span class="chips" id="status" style="margin:0"></span></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const pct=v=>(v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(1)+"%";
+const pc=(x,d=1)=>(x*100).toFixed(d)+"%";
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function j(u,o){const r=await fetch(u,o);const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText);return d}
+const post=(u,b)=>j(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+let CFG=null;
+
+const TABS=[...document.querySelectorAll(".tabs button")];
+function selectTab(b,focus){
+  TABS.forEach(x=>{const on=x===b;x.classList.toggle("on",on);x.setAttribute("aria-selected",on);x.tabIndex=on?0:-1});
+  ["brief","port","set"].forEach(v=>$("v-"+v).classList.toggle("hide",v!==b.dataset.v));
+  $("briefCtl").classList.toggle("hide",b.dataset.v!=="brief");
+  if(b.dataset.v==="port")loadOverview();
+  if(focus)b.focus();
+}
+TABS.forEach((b,i)=>{
+  b.onclick=()=>selectTab(b);
+  b.addEventListener("keydown",e=>{
+    const k={ArrowRight:(i+1)%TABS.length,ArrowLeft:(i+TABS.length-1)%TABS.length,Home:0,End:TABS.length-1}[e.key];
+    if(k!==undefined){e.preventDefault();selectTab(TABS[k],true)}
+  });
+});
+
+/* ---------- attention wording (the level itself is set server-side by the same rule) ---------- */
+function assess(r){
+  const big=Math.abs(r.z)>=2,co=r.company;
+  if(r.level==="High")return "Large company-specific move with new, high-impact company news. Start research here.";
+  if(r.level==="Medium"&&big&&co)return "Large company-specific move, but the related company news is low-impact or not new. Check for another driver.";
+  if(r.level==="Medium"&&big)return "Unexplained: the stock moved on its own, but no company news was found. The feed may have missed something.";
+  if(r.level==="Medium")return "High-impact company news, but the market has not reacted yet.";
+  return "Move is mostly explained by the market and sector. Nothing stands out about the company.";
+}
+const ORDER={High:0,Medium:1,Low:2};
+const DEF={move:"How unusual today's company-specific move is, in standard deviations of this stock's normal daily company-specific move.",
+  impact:"If true, how much could this news change the company's earnings, value, or risk?",
+  newinfo:"Is this new today, or a repeat of something already reported?",
+  thesis:"Does this news touch the specific reason we own the stock?"};
+const CONCENTRATED={NVDA:true,TSM:true};
+
+function bar(label,v,color,cls=""){
+  const scale=5,w=Math.min(Math.abs(v),scale)/scale*50,left=v>=0?50:50-w;
+  return `<div class="bar ${cls}"><span>${label}</span><div class="track" aria-hidden="true"><div class="fill" style="--c:${color};left:${left}%;width:${w}%"></div></div><span class="v">${pct(v)}</span></div>`;
+}
+
+const PROV={"News":"News article via Google News headlines (or Alpha Vantage News & Sentiment when available)","SEC 8-K":"SEC EDGAR filing (data.sec.gov), with item codes","SEC 6-K":"SEC EDGAR filing (data.sec.gov), foreign-issuer report","Earnings call":"Earnings call transcript via Alpha Vantage; EPS from its earnings endpoint","Sector":"News article via Google News headlines (or Alpha Vantage)","Macro":"Macro news; release data from the official agency"};
+function earningsImpact(co){
+  if(co.guidance==="Raised"||co.guidance==="Cut")return{score:3,why:"Guidance "+co.guidance.toLowerCase()};
+  if(co.surprise!=null&&Math.abs(co.surprise)>=5)return{score:3,why:"Large EPS surprise ("+(co.surprise>0?"+":"")+co.surprise.toFixed(1)+"%)"};
+  if(co.toneShift)return{score:2,why:"Guidance maintained, tone shift vs last call"};
+  return{score:1,why:"In line, no change in guidance or tone"};
+}
+function render(res){
+  const rows=res.rows.map(x=>{const h=CFG.holdings.find(q=>q.ticker===x.ticker)||{};
+    const r={tk:x.ticker,etf:x.etf,m:x.split.market_part_pct,s:x.split.sector_part_pct,c:x.split.company_part_pct,ret:x.split.ret_pct,z:x.split.z,sigma:x.split.sigma_pct,
+    level:x.level,headline:x.headline,why:x.why,thesis:x.thesis,thesisText:x.thesis_text,chain:h.chain||"",weight:h.weight,shares:h.shares,
+    company:x.company,sector:x.sector,macro:x.macro,n:x.counts,next:x.next_earnings,rday:x.reaction_day};
+    if(r.company&&r.company.type==="Earnings call"){const e=earningsImpact(r.company);r.company.impact=e.score;r.company.impactWhy=e.why}
+    return r});
+  const cal=res.calendar||{summary:"",events:[]};
+  $("macroSummary").textContent=cal.summary;
+  $("howto").hidden=!res.stress;
+  const evs=[...(cal.events||[]).map(e=>`<div class="ev"><b>${esc(e.time)}</b> ${esc(e.name)} <span class="chan">${esc(e.ch)}</span><span class="res">Actual vs expected: ${e.result?esc(e.result):"pending"}</span></div>`),
+    ...(res.stress?[]:(res.context||[])).map(e=>`<div class="ev ctx"><b>${esc(e.time)}</b> ${esc(e.name)} <span class="chan">${esc(e.ch)}</span><span class="res">Context, before the window: ${esc(e.result)}</span></div>`)];
+  $("events").innerHTML=evs.join("");
+  $("warns").innerHTML=(res.warnings||[]).map(w=>`<div class="warn">${esc(w)}</div>`).join("");
+  const grid=$("grid");grid.querySelectorAll(".item").forEach(n=>n.remove());
+  const hi=rows.filter(r=>r.level==="High").map(r=>r.tk),md=rows.filter(r=>r.level==="Medium").map(r=>r.tk);
+  const list=a=>a.length===1?a[0]:a.slice(0,-1).join(", ")+" and "+a[a.length-1];
+  $("summary").innerHTML=(hi.length?`<b>${hi.length} holding${hi.length>1?"s":""} need${hi.length>1?"":"s"} research today: ${list(hi)}.</b> `:"<b>No holding needs research today.</b> ")+(md.length?`${md.length} to check: ${list(md)}. `:"")+`${rows.length-hi.length-md.length} moved with the market or sector.`;
+
+  rows.forEach((r,i)=>{
+    const big=Math.abs(r.z)>=2,co=r.company,src=[];
+    const cite=(lab,o)=>{if(!o)return"";src.push({lab:lab==="Company"&&co?(co.type||"News"):lab,o});return o.url?`<a href="${esc(o.url)}" target="_blank" rel="noopener">[source ${src.length}]</a>`:`<a href="#" onclick="return false" title="${esc(o.title||"")}">[source ${src.length}]</a>`};
+    const layer=(lab,o,extra="")=>`<div class="layer"><span class="lab">${lab}</span><span>${o?esc(o.text||o.title)+extra+" "+cite(lab,o):'<span class="empty">No relevant item</span>'}</span></div>`;
+    const vc=r.level==="High"?"var(--high-text)":r.level==="Medium"?"var(--med-text)":"var(--muted)";
+    const isSec=co&&/^SEC/.test(co.type||"");
+    const item=document.createElement("div");
+    item.className="item"+(i===0&&r.level==="High"?" open":"");
+    item.innerHTML=`
+      <button class="row" aria-expanded="${item.className.includes("open")}">
+        <div class="tk">${r.tk}<small>vs ${esc(r.etf)} · SPY</small></div>
+        <div class="num">${pct(r.ret)}</div>
+        <div class="num">${pct(r.m)}</div>
+        <div class="num">${pct(r.s)}</div>
+        <div class="num ${big?"big":""}">${pct(r.c)} <span class="sig">(${Math.abs(r.z).toFixed(1)}σ)</span></div>
+        <div class="headline">${esc(r.headline)}</div>
+        <div class="badge ${r.level}">${r.level}</div>
+      </button>
+      <div class="card">
+        <div class="thesis">${r.weight?`<b>Position:</b> ${pc(r.weight,1)} of your portfolio${r.shares?` (${r.shares.toLocaleString()} shares)`:""}<br>`:""}<b>Why we own it:</b> ${esc(r.thesisText)||'<span class="empty">No thesis set. Add one under Holdings; the scorer uses it to judge relevance.</span>'}${r.chain?`<span class="detail">Value chain: ${esc(r.chain)}</span>`:""}</div>
+        <div class="cols">
+          <div>
+            <h3>What changed</h3>
+            ${layer("Company",co,co?`<span class="chan srct">${esc(co.type||"News")}</span>`+(co.item?`<span class="detail">${esc(co.item)}</span>`:""):"")}
+            ${layer("Sector",r.sector,r.sector&&r.sector.vc?`<span class="chan vct">Value chain: ${esc(r.sector.vc)}</span>`:"")}
+            ${layer("Macro",r.macro,r.macro&&r.macro.ch?`<span class="chan">${esc(r.macro.ch)}</span>`:"")}
+            ${co&&co.type==="Earnings call"?`<div class="ec"><h3>Earnings call summary</h3>
+              <ul class="ecsum">${(co.summary&&co.summary.length?co.summary:["Transcript summary not available for this call."]).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>
+              <h3 style="margin-top:14px">Earnings call details</h3><dl>
+              <dt>Timing</dt><dd>${esc(co.timing)}: market reacts ${/After/.test(co.timing)?"the next trading day":"the same day"}, so the return shown is from that day${r.rday?" ("+esc(r.rday)+")":""}</dd>
+              <dt>EPS surprise</dt><dd>${co.surprise==null?"n/a":(co.surprise>0?"+":"")+co.surprise.toFixed(1)+"% vs estimate (reported vs consensus, from the earnings data source)"}</dd>
+              <dt>Guidance</dt><dd>${esc(co.guidance)}</dd>
+              <dt>Tone</dt><dd>${esc(co.tone)}${co.toneShift?" (shift vs last call)":""}</dd>
+              <dt>Key metrics</dt><dd>${esc(co.metrics)}</dd>
+              <dt>Top Q&amp;A theme</dt><dd>${esc(co.qa)}</dd>
+              <dt>New vs last call</dt><dd>${esc(co.newVsLast)}</dd>
+              <dt>Impact score</dt><dd>${co.impact} of 3: ${esc(co.impactWhy)}</dd></dl></div>`:""}
+            <div class="why"><h3>Why it may matter</h3><p>${r.why?esc(r.why):'<span class="empty">No summary: needs at least one relevant item and an LLM key.</span>'}</p></div>
+          </div>
+          <div>
+            <h3>Where the move came from</h3>
+            <div class="bars">
+              ${bar("Broad market (SPY)",r.m,"var(--market)")}
+              ${bar("Sector ("+esc(r.etf)+")",r.s,"var(--sector)")}
+              ${bar("Company-specific",r.c,"var(--company)")}
+              ${bar("Total return",r.ret,"var(--muted)","total")}
+            </div>
+            <div class="verdict" style="--vc:${vc}"><b>Attention: ${r.level}.</b> ${assess(r)}</div>
+          </div>
+        </div>
+        <div class="tiles">
+          <div class="tile" title="${DEF.move}"><div class="t">Company-specific move</div><div class="s">${Math.abs(r.z).toFixed(1)}σ</div><div class="d">${DEF.move}</div><div class="r">${big?"Unusual for this stock (≥ 2σ)":"Within normal range"}</div></div>
+          <div class="tile" title="${DEF.impact}"><div class="t">Impact</div><div class="s">${co?co.impact+" of 3":"—"}</div><div class="d">${DEF.impact}</div><div class="r">${co?["","Routine","Notable","Could change estimates or risk"][co.impact]+(isSec?" (from 8-K item code)":co.impactWhy?" ("+co.impactWhy.toLowerCase()+")":""):"No company news"}</div></div>
+          <div class="tile" title="${DEF.newinfo}"><div class="t">New information</div><div class="s">${co?co.newinfo+" of 3":"—"}</div><div class="d">${DEF.newinfo}</div><div class="r">${co?["","Repeat or recap","Update to a known story","First report"][co.newinfo]:"No company news"}</div></div>
+          <div class="tile" title="${DEF.thesis}"><div class="t">Thesis relevance</div><div class="s">${r.thesis} of 3</div><div class="d">${DEF.thesis}</div><div class="r">Orders holdings within the same attention level</div></div>
+        </div>
+        ${src.length?`<div class="sources"><b>Sources</b><ol>${src.map(s=>`<li>${s.o.url?`<a href="${esc(s.o.url)}" target="_blank" rel="noopener">${esc(s.o.title||s.o.publisher||"Source")}</a>`:`<span>${esc(s.o.title||"Source")}</span>`}<span class="prov">${esc(s.o.publisher||"")}${s.o.publisher?" · ":""}${esc(PROV[s.lab]||"")}</span></li>`).join("")}</ol></div>`:""}
+        ${CONCENTRATED[r.tk]?`<p class="fn">Note: ${r.tk} is a large holding in ${esc(r.etf)}, so part of its own move shows up in the sector part. The company-specific part may be understated.</p>`:""}
+        <div class="foot"><span>${r.n[0]} articles reviewed, ${r.n[1]} relevant, ${r.n[2]} cited</span><span>Usual daily company-specific move for ${r.tk}: ${r.sigma.toFixed(1)}% · Next earnings call: ${r.next?esc(r.next):"not on the earnings calendar"}</span></div>
+      </div>`;
+    const btn=item.querySelector("button");
+    btn.addEventListener("click",()=>{const o=item.classList.toggle("open");btn.setAttribute("aria-expanded",o)});
+    grid.appendChild(item);
+  });
+}
+
+/* ---------- run ---------- */
+let LAST=null;
+async function runBrief(day,quiet){
+  $("run").disabled=true;$("warns").innerHTML="";$("prog").classList.remove("hide");$("prog").firstChild.style.width="2%";
+  $("msg").textContent=quiet?"Analysing the latest day for your holdings…":"Running…";
+  setBriefStatus("run","Analysing the latest day's news for your holdings…");
+  let ok=false;
+  try{
+    const {id}=await post("/api/analyze",{day});
+    while(true){
+      await new Promise(r=>setTimeout(r,1000));
+      const jb=await j("/api/job/"+id);
+      $("prog").firstChild.style.width=Math.max(2,jb.progress*100)+"%";
+      const lg=jb.log.length?jb.log[jb.log.length-1]:"Running…";$("msg").textContent=lg;setBriefStatus("run",lg);
+      if(jb.status==="done"){render(jb.result);LAST=jb.result;$("msg").textContent="";ok=true;break}
+      if(jb.status==="error")throw new Error(jb.error);
+    }
+  }catch(e){$("msg").textContent="Error: "+e.message;setBriefStatus("err","The brief could not be built: "+e.message)}
+  $("run").disabled=false;$("prog").classList.add("hide");
+  if(ok){drawComposition();setBriefStatus("done")}
+}
+$("run").onclick=()=>runBrief($("day").value);
+
+/* ---------- portfolio ---------- */
+$("opt").onclick=async()=>{
+  $("omsg").textContent="Optimizing…";$("opt").disabled=true;
+  try{renderPort(await post("/api/optimize",{lo:$("lo").value/100,hi:$("hi").value/100,rf:$("rf").value/100,holdout:+$("ho").value}));$("omsg").textContent=""}
+  catch(e){$("omsg").textContent="Error: "+e.message}
+  $("opt").disabled=false;
+};
+const hbars=(o,mx)=>Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="hb"><b>${k}</b><div class="rb"><i style="width:${v/mx*100}%"></i></div><span style="text-align:right">${pc(v,0)}</span></div>`).join("");
+function renderPort(D){
+  const names=(D.current?["Current"]:[]).concat(["Max-Sharpe mix","Equal weight","Min variance","SPY"]),col={"Current":"var(--market)","Max-Sharpe mix":"var(--company)","Equal weight":"var(--med-text)","Min variance":"var(--sector)","SPY":"var(--muted)"};
+  const e=D.expected,ho=D.compare["Max-Sharpe mix"].holdout;
+  let h=`<div class="kpis">${[["Expected return",pc(e.ret),"annualized, in-sample"],["Volatility",pc(e.vol),"annualized"],["Sharpe ratio of that mix",e.sharpe.toFixed(2),"in-sample"],["Hold-out return",ho?pc(ho.ret):"–",ho?D.holdout[0]+" → "+D.holdout[1]:"none"]].map(k=>`<div class="tile"><div class="t">${k[0]}</div><div class="s">${k[1]}</div><div class="d">${k[2]}</div></div>`).join("")}</div>`;
+  h+=`<div class="two"><div class="panel"><h3>Weights in the max-Sharpe mix</h3>${hbars(D.weights,Math.max(D.hi,.01))}${D.current?`<p class="sig" style="margin:12px 0 0">Your current weights: ${Object.entries(D.current).sort((a,b)=>b[1]-a[1]).map(([k,v])=>k+" "+pc(v,0)).join(" · ")}</p>`:""}</div><div class="panel"><h3>Share of risk</h3>${hbars(D.risk,Math.max(...Object.values(D.risk),.01))}</div></div>`;
+  const dt=D.dates,W=620,H=250,pl=40,pb=22,all=names.flatMap(n=>D.curves[n]),mn=Math.min(...all),mx=Math.max(...all);
+  const X=i=>pl+i/(dt.length-1)*(W-pl-8),Y=v=>H-pb-(v-mn)/(mx-mn)*(H-pb-10);let sv=`<svg viewBox="0 0 ${W} ${H}">`;
+  for(let t=0;t<5;t++){const v=mn+(mx-mn)*t/4;sv+=`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pl-5}" y="${Y(v)+4}" text-anchor="end" font-size="10" fill="var(--muted)">${v.toFixed(2)}</text>`}
+  if(D.holdout){const oi=dt.indexOf(D.holdout[0]);sv+=`<line x1="${X(oi)}" x2="${X(oi)}" y1="8" y2="${H-pb}" stroke="var(--muted)" stroke-dasharray="3 3"/><text x="${X(oi)-4}" y="16" text-anchor="end" font-size="10" fill="var(--muted)">optimized on left | hold-out right</text>`}
+  names.forEach(n=>sv+=`<polyline fill="none" stroke="${col[n]}" stroke-width="${n=="Max-Sharpe mix"?2.4:1.5}" points="${D.curves[n].map((v,i)=>X(i)+","+Y(v)).join(" ")}"/>`);
+  [0,dt.length-1].forEach(i=>sv+=`<text x="${X(i)}" y="${H-6}" text-anchor="${i?"end":"start"}" font-size="10" fill="var(--muted)">${dt[i]}</text>`);
+  h+=`<div class="panel"><h3>Growth of $1</h3>${sv}</svg><div class="lg">${names.map(n=>`<span><b style="background:${col[n]}"></b>${n}</span>`).join("")}</div></div>`;
+  const F=D.frontier,pts=[...Object.entries(D.assets).map(([k,a])=>[k,a.vol,a.ret]),["Max-Sharpe mix",e.vol,e.ret]],xs=[...F.map(a=>a[0]),...pts.map(a=>a[1])],ys=[...F.map(a=>a[1]),...pts.map(a=>a[2])];
+  const x0=Math.min(...xs)-.02,x1=Math.max(...xs)+.04,y0=Math.min(...ys)-.03,y1=Math.max(...ys)+.03,W2=400,H2=270,fX=v=>40+(v-x0)/(x1-x0)*(W2-50),fY=v=>H2-24-(v-y0)/(y1-y0)*(H2-34);
+  let f=`<svg viewBox="0 0 ${W2} ${H2}"><polyline fill="none" stroke="var(--muted)" stroke-width="2" points="${F.map(a=>fX(a[0])+","+fY(a[1])).join(" ")}"/>`;
+  pts.forEach(([k,x,y])=>{const m=k=="Max-Sharpe mix";f+=`<circle cx="${fX(x)}" cy="${fY(y)}" r="${m?7:4}" fill="${m?"var(--company)":"var(--muted)"}"/><text x="${fX(x)+9}" y="${fY(y)+4}" font-size="11" fill="var(--text)">${k}</text>`});
+  f+=`<text x="${W2/2}" y="${H2-4}" text-anchor="middle" font-size="10" fill="var(--muted)">volatility →</text><text x="10" y="12" font-size="10" fill="var(--muted)">return ↑</text></svg>`;
+  h+=`<div class="two"><div class="panel"><h3>Efficient frontier</h3>${f}</div><div class="panel"><h3>Each holding alone</h3><table class="t"><tr><th>Ticker</th><th>Return</th><th>Vol</th><th>Sharpe</th></tr>${Object.entries(D.assets).map(([k,a])=>`<tr><td>${k}</td><td>${pc(a.ret)}</td><td>${pc(a.vol)}</td><td>${a.sharpe.toFixed(2)}</td></tr>`).join("")}</table></div></div>`;
+  const cell=(p,k)=>p?(k=="sharpe"?(p.sharpe==null?"–":p.sharpe.toFixed(2)):pc(p[k])):"–";
+  h+=`<div class="panel"><h3>Strategy comparison</h3><table class="t"><tr><th></th><th>Train Sharpe</th><th>Train vol</th><th>Train max DD</th><th>Hold-out return</th><th>Hold-out max DD</th></tr>${names.map(n=>{const c=D.compare[n];return `<tr><td>${n}</td><td>${cell(c.train,"sharpe")}</td><td>${cell(c.train,"vol")}</td><td>${cell(c.train,"mdd")}</td><td>${cell(c.holdout,"ret")}</td><td>${cell(c.holdout,"mdd")}</td></tr>`}).join("")}</table></div>`;
+  h+=`<p class="disclaimer">Trained ${D.train[0]} → ${D.train[1]}. In-sample Sharpe uses historical mean returns and overstates what to expect; the hold-out is a short sample. Not investment advice.</p>`;
+  $("pout").innerHTML=h;
+}
+
+
+/* ---------- portfolio overview ---------- */
+let OV_LOADED=false;
+const sgn=v=>`<span class="${v>=0?"pos":"neg"}">${pct(v*100)}</span>`;
+async function loadOverview(force){
+  if(OV_LOADED&&!force)return;
+  $("ovout").innerHTML='<p class="sig">Loading portfolio overview…</p>';
+  try{renderOverview(await j("/api/overview"));OV_LOADED=true}catch(e){$("ovout").innerHTML='<div class="warn">Could not build the overview: '+esc(e.message)+'</div>'}
+}
+function renderOverview(D){
+  const P=D.portfolio,S=D.spy,pos=D.positions;
+  OV_DATA=D;
+  let h=`<div class="panel"><h3>Portfolio composition</h3><div id="briefStatus" role="status" aria-live="polite" class="sig" style="margin:0 0 10px"></div><div id="comp"></div></div><div class="kpis">${[
+    ["Your portfolio, last "+D.days+" days",pct(P.ret*100),"vs SPY "+pct(S.ret*100)],
+    ["Volatility (annualized)",pc(P.vol),"SPY "+pc(S.vol)],
+    ["Worst peak-to-trough drop",pc(P.mdd),"SPY "+pc(S.mdd)],
+    ["Sensitivity to the market (beta)",D.beta.toFixed(2),D.beta>1.1?"moves more than SPY":D.beta<0.9?"moves less than SPY":"about the same as SPY"]
+  ].map(k=>`<div class="tile"><div class="t">${k[0]}</div><div class="s">${k[1]}</div><div class="d">${k[2]}</div></div>`).join("")}</div>`;
+  // plain-language observations
+  const riskBy={};pos.forEach(p=>riskBy[p.etf]=(riskBy[p.etf]||0)+p.risk);
+  const topRisk=Object.entries(riskBy).sort((a,b)=>b[1]-a[1])[0];
+  const topW=D.by_etf[topRisk[0]]||0;
+  const obs=[`Your top 3 holdings (${pos.slice(0,3).map(p=>p.ticker).join(", ")}) make up <b>${pc(D.top3,0)}</b> of the portfolio.`,
+    `<b>${topRisk[0]}</b> holdings (${pos.filter(p=>p.etf===topRisk[0]).map(p=>p.ticker).join(", ")}) are ${pc(topW,0)} of the weight but ${pc(topRisk[1],0)} of the risk.`];
+  if(D.top_pair)obs.push(`Most closely moving pair: <b>${D.top_pair[0]} and ${D.top_pair[1]}</b> (correlation ${D.top_pair[2].toFixed(2)}), so they tend to rise and fall together.`);
+  h+=`<div class="panel"><h3>What stands out</h3><ul class="insights">${obs.map(o=>`<li>${o}</li>`).join("")}</ul></div>`;
+  // positions table
+  h+=`<div class="panel"><h3>Positions</h3><div style="overflow-x:auto"><table class="t"><tr><th>Holding</th><th>Weight</th><th>Price</th><th>1 day</th><th>1 month</th><th>${D.days} days</th><th>Share of risk</th></tr>${pos.map(p=>`<tr><td><b>${p.ticker}</b> <span class="sig">${esc(p.name.slice(0,26))}</span></td><td>${pc(p.weight)}</td><td>$${p.price.toFixed(2)}</td><td>${sgn(p.d1)}</td><td>${sgn(p.m1)}</td><td>${sgn(p.period)}</td><td>${pc(p.risk,0)}</td></tr>`).join("")}</table></div></div>`;
+  // growth chart
+  const dt=D.dates,W=620,H=250,pl=40,pb=22,keys=["Your portfolio","SPY"],all=keys.flatMap(k=>D.curves[k]),mn=Math.min(...all),mx=Math.max(...all);
+  const X=i=>pl+i/(dt.length-1)*(W-pl-8),Y=v=>H-pb-(v-mn)/(mx-mn)*(H-pb-10),colr={"Your portfolio":"var(--company)","SPY":"var(--muted)"};
+  let sv=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Growth of $1: your portfolio ends at ${D.curves["Your portfolio"].slice(-1)[0].toFixed(2)}, SPY at ${D.curves["SPY"].slice(-1)[0].toFixed(2)}">`;
+  for(let t_=0;t_<5;t_++){const v=mn+(mx-mn)*t_/4;sv+=`<line x1="${pl}" x2="${W-8}" y1="${Y(v)}" y2="${Y(v)}" stroke="var(--line)"/><text x="${pl-5}" y="${Y(v)+4}" text-anchor="end" font-size="10" fill="var(--muted)">${v.toFixed(2)}</text>`}
+  keys.forEach(k=>sv+=`<polyline fill="none" stroke="${colr[k]}" stroke-width="${k==="SPY"?1.6:2.4}" points="${D.curves[k].map((v,i)=>X(i)+","+Y(v)).join(" ")}"/>`);
+  [0,dt.length-1].forEach(i=>sv+=`<text x="${X(i)}" y="${H-6}" text-anchor="${i?"end":"start"}" font-size="10" fill="var(--muted)">${dt[i]}</text>`);
+  h+=`<div class="two"><div class="panel"><h3>Growth of $1 vs SPY</h3>${sv}</svg><div class="lg">${keys.map(k=>`<span><b style="background:${colr[k]}"></b>${k}</span>`).join("")}</div><p class="sig" style="margin:8px 0 0">Today's weights held constant over the period.</p></div>
+    <div class="panel"><h3>Weight by sector benchmark</h3>${hbars(D.by_etf,Math.max(...Object.values(D.by_etf)))}</div></div>`;
+  $("ovout").innerHTML=h;
+  drawComposition();setBriefStatus(LAST?"done":(BS.kind||"idle"),BS.text);
+}
+
+/* ---------- composition donut + attention highlights ---------- */
+let OV_DATA=null,BS={kind:"idle",text:""};
+const ATT={High:{fill:"#c93a36",ink:"#fff",label:"High",bg:"#fbe3e2",tx:"#a8322e"},Medium:{fill:"#e8a317",ink:"#1b1f24",label:"Medium",bg:"#fbefd9",tx:"#8a5a00"},
+  Low:{fill:"#23895a",ink:"#fff",label:"Low",bg:"#dcf1e5",tx:"#1b6b46"},Low2:{fill:"#5fb98a",ink:"#10261b",label:"Low",bg:"#dcf1e5",tx:"#1b6b46"},
+  Pending:{fill:"#9aa5b1",ink:"#fff",label:"Not checked yet",bg:"#eceef1",tx:"#4a515a"},Pending2:{fill:"#c3cbd4",ink:"#1b1f24",label:"Not checked yet",bg:"#eceef1",tx:"#4a515a"},
+  Move:{fill:"#e8a317",ink:"#1b1f24",label:"Large move today",bg:"#fbefd9",tx:"#8a5a00"}};
+function setBriefStatus(kind,text){
+  BS={kind,text:text||""};
+  const el=$("briefStatus");if(!el)return;
+  if(kind==="run")el.innerHTML=`<span aria-hidden="true">⏳</span> ${esc(text)} <span class="sig">Highlights below update when it finishes.</span>`;
+  else if(kind==="err")el.innerHTML=`<span class="neg">${esc(text)}</span>`;
+  else if(kind==="done"&&LAST&&!LAST.stress){const hi=LAST.rows.filter(r=>r.level==="High").length,md=LAST.rows.filter(r=>r.level==="Medium").length;
+    el.innerHTML=`Brief for <b>${esc(LAST.day)}</b> is ready: <b>${hi}</b> need research, <b>${md}</b> to check. <button class="p" id="goBrief" style="padding:4px 14px;margin-left:6px">View the brief →</button>`;
+    $("goBrief").onclick=()=>selectTab(TABS[1],true)}
+  else el.textContent="";
+}
+function arcPath(cx,cy,r0,r1,a0,a1){
+  const P=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)],lg=a1-a0>Math.PI?1:0,[x0,y0]=P(r1,a0),[x1,y1]=P(r1,a1),[x2,y2]=P(r0,a1),[x3,y3]=P(r0,a0);
+  return `M${x0},${y0}A${r1},${r1} 0 ${lg} 1 ${x1},${y1}L${x2},${y2}A${r0},${r0} 0 ${lg} 0 ${x3},${y3}Z`;
+}
+function drawComposition(){
+  const D=OV_DATA,el=$("comp");if(!D||!el)return;
+  const A={};if(LAST&&!LAST.stress)LAST.rows.forEach(x=>A[x.ticker]={lvl:x.level,note:x.headline,z:x.split.z});
+  const rows=D.positions.map((p,i)=>{
+    const a=A[p.ticker];let key,note;
+    if(a){key=a.lvl==="Low"?(i%2?"Low2":"Low"):a.lvl;note=a.note}
+    else if(Math.abs(p.z)>=2){key="Move";note=`Moved ${Math.abs(p.z).toFixed(1)}σ beyond what the market and sector explain on ${p.zday}`}
+    else{key=i%2?"Pending2":"Pending";note=BS.kind==="run"?"Checking…":""}
+    const flag=key==="High"||key==="Medium"||key==="Move";
+    return {...p,key,note,flag,level:a?a.lvl:(key==="Move"?"Check":null)};
+  });
+  const nFlag=rows.filter(r=>r.flag).length;
+  const pend=!LAST&&BS.kind==="run"&&nFlag===0;
+  const cx=130,cy=130,r0=62,r1=112;let ang=-Math.PI/2,sv=`<svg viewBox="0 0 260 260" style="max-width:300px" role="img" aria-label="Donut chart of portfolio composition. ${pend?"Attention check in progress.":nFlag+" holdings highlighted as needing attention."} Full list follows.">`;
+  rows.forEach(r=>{
+    const sweep=Math.max(r.weight,0.0001)*2*Math.PI,a0=ang,a1=ang+Math.min(sweep,2*Math.PI-1e-4),mid=(a0+a1)/2;ang+=sweep;
+    const off=r.flag?9:0,dx=Math.cos(mid)*off,dy=Math.sin(mid)*off,c=ATT[r.key];
+    sv+=`<g transform="translate(${dx.toFixed(1)},${dy.toFixed(1)})"><path d="${arcPath(cx,cy,r0,r1,a0,a1)}" fill="${c.fill}" stroke="${r.flag?"#1b1f24":"#fff"}" stroke-width="${r.flag?2:1.5}"><title>${r.ticker}: ${pc(r.weight)} of portfolio. ${c.label}${r.note?" - "+esc(r.note):""}</title></path>`;
+    if(r.weight>=0.06){const m=(r0+r1)/2;sv+=`<text x="${cx+m*Math.cos(mid)}" y="${cy+m*Math.sin(mid)+4}" text-anchor="middle" font-size="11" font-weight="700" fill="${c.ink}" pointer-events="none">${r.ticker}</text>`}
+    sv+='</g>';
+  });
+  sv+=`<text x="${cx}" y="${cy-2}" text-anchor="middle" font-size="30" font-weight="700" fill="var(--text)">${pend?"…":nFlag}</text><text x="${cx}" y="${cy+18}" text-anchor="middle" font-size="12" fill="var(--muted)">${pend?"checking":(nFlag===1?"needs attention":"need attention")}</text></svg>`;
+  const order={High:0,Medium:1,Move:1};
+  const legend=[...rows].sort((a,b)=>(order[a.key]??2)-(order[b.key]??2)||b.weight-a.weight).map(r=>{
+    const c=ATT[r.key];
+    return `<li style="display:grid;grid-template-columns:14px 1fr auto;gap:4px 10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line)${r.flag?";background:color-mix(in srgb,"+c.fill+" 9%,transparent)":""}">
+      <span style="width:12px;height:12px;border-radius:3px;background:${c.fill};${r.flag?"outline:2px solid #1b1f24;":""}align-self:center" aria-hidden="true"></span>
+      <span><b>${r.ticker}</b> <span class="sig">${pc(r.weight)}${r.shares?" · "+r.shares.toLocaleString()+" sh":""}</span>${r.note?`<span class="detail" style="display:block;font-size:13px;color:var(--muted);max-width:46ch">${esc(r.note)}</span>`:""}</span>
+      <span class="badge" style="min-width:0;padding:2px 10px;font-size:12px;background:${c.bg};color:${c.tx};border:1px solid ${c.fill}">${r.key==="Move"?"Check":(A[r.ticker]?r.level:"Not checked")}</span></li>`}).join("");
+  const keyItems=[["High","Large unexplained move with new, high-impact news"],["Medium","Worth a look: unexplained move, or high-impact news"],["Low","Moved with the market or sector"],["Pending","Not checked yet"]];
+  const keyHtml=`<div class="lg" style="margin:0 0 14px" aria-label="Color key">${keyItems.map(([k,tx])=>`<span title="${tx}"><b style="background:${ATT[k].fill}${k==="High"||k==="Medium"?";outline:1.5px solid #1b1f24":""}"></b>${ATT[k].label}</span>`).join("")}</div>`;
+  el.innerHTML=`<div style="display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:24px;align-items:center" class="compgrid">
+    <div>${sv}</div><div>${keyHtml}<ul style="list-style:none;margin:0;padding:0">${legend}</ul>
+    <p class="sig" style="margin:10px 0 0">${LAST&&!LAST.stress?`Highlights come from the brief for ${esc(LAST.day)}: pulled-out slices with a dark outline are High or Medium attention.`:`Pulled-out slices have a large unexplained price move today. Full highlights (news, filings) appear when the brief finishes.`} Research priority, not a buy or sell signal.</p></div></div>`;
+}
+
+/* ---------- holdings editor ---------- */
+function renderHold(){
+  $("hold").innerHTML=CFG.holdings.map((h,i)=>`<div class="panel" data-i="${i}"><div class="hr"><input class="field" data-k="ticker" value="${esc(h.ticker)}" placeholder="Ticker"><input class="field" data-k="etf" value="${esc(h.etf)}" placeholder="Sector ETF"><input class="field" data-k="name" value="${esc(h.name)}" placeholder="Company name"><button class="p ghost" data-del="${i}">Remove</button></div>
+  <textarea class="field" data-k="thesis" placeholder="Why do we own it? One sentence.">${esc(h.thesis)}</textarea><textarea class="field" data-k="chain" placeholder="Value chain: suppliers, customers, key inputs">${esc(h.chain)}</textarea></div>`).join("");
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{collect();CFG.holdings.splice(+b.dataset.del,1);renderHold()});
+}
+function collect(){document.querySelectorAll("#hold .panel").forEach(c=>{const h=CFG.holdings[+c.dataset.i];c.querySelectorAll("[data-k]").forEach(el=>{h[el.dataset.k]=el.value})})}
+$("add").onclick=()=>{collect();CFG.holdings.push({ticker:"",etf:"SPY",name:"",thesis:"",chain:"",guide:["","",""],pattern:""});renderHold()};
+$("save").onclick=async()=>{
+  collect();CFG.holdings=CFG.holdings.filter(h=>h.ticker.trim());
+  CFG.holdings.forEach(h=>{if(h.pattern&&!new RegExp(h.pattern,"i").test(h.name))h.pattern=""});
+  try{const r=await post("/api/config",CFG);CFG=r.cfg;renderHold();$("smsg").textContent="Saved."}catch(e){$("smsg").textContent="Error: "+e.message}
+};
+
+/* ---------- upload / start ---------- */
+let PENDING=null;
+function showStart(on){
+  $("v-start").classList.toggle("hide",!on);
+  document.querySelector(".tabs").classList.toggle("hide",on);
+  $("briefCtl").classList.toggle("hide",on);
+  if(on){["brief","port","set"].forEach(v=>$("v-"+v).classList.add("hide"))}
+  else{const t=document.querySelector(".tabs button[aria-selected=true]").dataset.v;["brief","port","set"].forEach(v=>$("v-"+v).classList.toggle("hide",v!==t));$("briefCtl").classList.toggle("hide",t!=="brief")}
+}
+async function upload(fileOrText){
+  $("upmsg").textContent="Reading and looking up tickers…";$("preview").classList.add("hide");
+  try{
+    let r;
+    if(typeof fileOrText==="string")r=await post("/api/upload",{csv:fileOrText});
+    else{const fd=new FormData();fd.append("file",fileOrText);r=await j("/api/upload",{method:"POST",body:fd})}
+    PENDING=r;$("upmsg").textContent="";
+    $("upwarns").innerHTML=r.warnings.map(w=>`<div class="warn">${esc(w)}</div>`).join("");
+    $("ptable").innerHTML='<tr><th>Ticker</th><th style="text-align:left">Name</th><th>Sector ETF</th><th>Shares</th><th>Weight</th></tr>'+r.holdings.map(h=>`<tr><td><b>${esc(h.ticker)}</b></td><td style="text-align:left">${esc(h.name)}</td><td>${esc(h.etf)}</td><td>${h.shares?h.shares.toLocaleString():"–"}</td><td>${pc(h.weight)}</td></tr>`).join("");
+    $("preview").classList.remove("hide");
+  }catch(e){$("upmsg").textContent="Could not read the file: "+e.message}
+}
+$("file").onchange=e=>{if(e.target.files[0])upload(e.target.files[0])};
+$("useSample").onclick=async()=>upload(await (await fetch("/sample.csv")).text());
+const drop=$("drop");
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor="var(--company)"}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor=""}));
+drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0];if(f)upload(f)});
+$("confirm").onclick=async()=>{
+  const hs=PENDING.holdings.map(h=>({ticker:h.ticker,name:h.name,etf:h.etf,thesis:h.thesis||"",chain:h.chain||"",guide:["","",""],pattern:"",shares:h.shares,weight:h.weight}));
+  const r=await post("/api/config",{market:"SPY",holdings:hs});
+  CFG=r.cfg;LOADED=true;OV_LOADED=false;renderHold();$("grid").querySelectorAll(".item").forEach(n=>n.remove());$("summary").innerHTML="";$("macroSummary").textContent="Pick a trading day and run the analysis.";
+  $("pout").innerHTML="";LAST=null;OV_DATA=null;
+  selectTab(TABS[0]);showStart(false);
+  const first=$("day").options[0];if(first){$("day").value=first.value;runBrief(first.value,true)}
+};
+$("cancelUp").onclick=()=>{$("preview").classList.add("hide");if(CFG&&LOADED)showStart(false)};
+$("reup").onclick=()=>{$("preview").classList.add("hide");showStart(true)};
+let LOADED=false;
+
+/* ---------- init ---------- */
+(async function(){
+  const c=await j("/api/config");CFG=c.cfg;LOADED=false;const s=c.status;   /* every visit starts at the upload page, even if a portfolio was saved earlier */
+  $("status").innerHTML=`<span class="chip ${s.news_blocked||!s.av?"no":"ok"}">News: ${s.av&&!s.news_blocked?"Alpha Vantage":"Google News (keyless)"}</span><span class="chip ${s.llm?"ok":"no"}">LLM: ${s.llm||"no key"}</span><span class="chip ok">Prices: Yahoo</span><span class="chip ok">Filings: SEC EDGAR</span>`;
+  renderHold();
+  showStart(true);
+  try{const d=await j("/api/days");$("day").innerHTML=d.days.slice().reverse().map(x=>`<option value="${x}">${new Date(x+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"})}</option>`).join("")+'<option value="earnings">Stress test: earnings calls</option>'}
+  catch(e){$("msg").textContent="Could not load prices: "+e.message}
+})();
+</script>
+</body>
+</html>
