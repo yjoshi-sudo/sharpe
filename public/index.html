@@ -152,6 +152,16 @@ svg{width:100%;height:auto;display:block}.lg{display:flex;gap:16px;flex-wrap:wra
 @media (forced-colors:active){.tabs button[aria-selected="true"]{border-bottom:4px solid Highlight}}
 .pos{color:var(--sector)}.neg{color:var(--company)}.insights{margin:0;padding-left:20px;font-size:15px}.insights li{margin:0 0 6px}
 @media(max-width:640px){.compgrid{grid-template-columns:1fr!important}}
+
+.hero{text-align:center;padding:44px 0 26px}
+.logo{display:inline-flex;align-items:center;gap:14px;margin:0 0 14px}
+.logo-mark{width:64px;height:64px;flex:none}
+.logo-word{font-size:clamp(40px,9vw,60px);font-weight:600;letter-spacing:-.03em;line-height:1}
+.logo-word b{color:var(--company);font-weight:600}
+.hero p.tag{font-size:18px;color:var(--muted);margin:0 auto;max-width:48ch}
+.brand{display:flex;align-items:center;gap:10px}.brand .logo-mark{width:36px;height:36px}
+.brand .logo-word{font-size:26px}
+body.landing header{display:none}
 </style>
 </head>
 <body>
@@ -159,13 +169,13 @@ svg{width:100%;height:auto;display:block}.lg{display:flex;gap:16px;flex-wrap:wra
 <div class="wrap" id="main">
   <header>
     <div>
-      <h1>Portfolio brief</h1>
-      <p class="sub">What changed, why it may matter, what to look at first</p>
+      <div class="brand"><svg class="logo-mark" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="12" fill="#1b1f24"/><path d="M10 33l9-10 7 6 12-15" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="38" cy="14" r="3.6" fill="#d9534f"/></svg><h1 class="logo-word">Sharp<b>e</b></h1></div>
+      <p class="sub">Portfolio brief: what changed, why it may matter, what to look at first</p>
     </div>
     <div class="ctl hide" id="briefCtl">
       <label><span class="sr" style="position:absolute;left:-9999px">Trading day</span>
       <select id="day" aria-label="Trading day"></select></label>
-      <button class="p" id="run">Run analysis</button>
+      <button class="p" id="run">Run analysis</button><button class="p ghost" id="exportCsv" type="button">Export CSV</button>
     </div>
   </header>
   <nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tab-port" data-v="port" aria-controls="v-port" aria-selected="true" tabindex="0" class="on"><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 16.5h14"/><path d="M5 16V9M10 16V4M15 16v-5"/></svg><span>Portfolio</span></button><button role="tab" id="tab-brief" data-v="brief" aria-controls="v-brief" aria-selected="false" tabindex="-1" class=""><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="14" height="14" rx="2"/><path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4"/></svg><span>Brief</span></button><button role="tab" id="tab-set" data-v="set" aria-controls="v-set" aria-selected="false" tabindex="-1" class=""><svg class="ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/><circle cx="7" cy="6" r="1.6" fill="var(--surface)"/><circle cx="13" cy="10" r="1.6" fill="var(--surface)"/><circle cx="8" cy="14" r="1.6" fill="var(--surface)"/></svg><span>Holdings</span></button></nav>
@@ -173,13 +183,15 @@ svg{width:100%;height:auto;display:block}.lg{display:flex;gap:16px;flex-wrap:wra
   <p class="note" id="msg" role="status" aria-live="polite"></p>
 
 <div id="v-start" class="hide">
-  <section class="macro" style="margin-top:22px">
+  <div class="hero"><div class="logo"><svg class="logo-mark" viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="12" fill="#1b1f24"/><path d="M10 33l9-10 7 6 12-15" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="38" cy="14" r="3.6" fill="#d9534f"/></svg><span class="logo-word">Sharp<b>e</b></span></div>
+  <p class="tag">An AI portfolio monitor. Upload your holdings and see which ones deserve research time today.</p></div>
+  <section class="macro" style="margin-top:6px">
     <p class="macro-summary">Start by uploading your portfolio.</p>
     <p style="margin:0;font-size:14px">A CSV with one row per holding, or a positions export straight from your broker (Symbol, Description, Quantity, Market Value…; title, cash and total rows are skipped). Only <b>ticker</b> is required. Optional columns: <b>shares</b> (or <b>weight</b> / <b>value</b>), <b>name</b>, <b>sector_etf</b>, <b>thesis</b>, <b>value_chain</b>. Missing names and sector ETFs are looked up for you.</p>
   </section>
   <div class="panel" id="drop" style="text-align:center;padding:30px 20px;border-style:dashed">
     <p style="margin:0 0 12px">Drag a CSV here, or</p>
-    <div class="ctl" style="justify-content:center"><label class="p" style="cursor:pointer;display:inline-block">Choose file<input type="file" id="file" accept=".csv,text/csv" style="display:none"></label>
+    <div class="ctl" style="justify-content:center"><label class="p" style="cursor:pointer;display:inline-block;padding:12px 26px;font-size:17px">Upload CSV<input type="file" id="file" accept=".csv,text/csv" style="display:none"></label>
     <button class="p ghost" id="useSample">Use the sample portfolio</button><a href="/sample.csv" style="font-size:14px">Download sample CSV</a><a href="/sample_brokerage.csv" style="font-size:14px">Download brokerage-style sample</a></div>
     <p class="sig" id="upmsg" style="margin:12px 0 0"></p>
   </div>
@@ -614,10 +626,19 @@ $("save").onclick=()=>{
   OV_LOADED=false;renderHold();$("smsg").textContent="Saved for this session. Re-run the brief to use the changes."
 };
 
+
+$("exportCsv").onclick=()=>{
+  if(!LAST){$("msg").textContent="Run a brief first, then export it.";return}
+  const q=v=>{v=v==null?"":String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+  const cols=["day","ticker","attention","return_pct","market_pct","sector_pct","company_pct","z","headline","why"];
+  const lines=[cols.join(",")].concat(LAST.rows.map(x=>[LAST.day||"",x.ticker,x.level,x.split.ret_pct,x.split.market_part_pct,x.split.sector_part_pct,x.split.company_part_pct,x.split.z,x.headline,x.why].map(q).join(",")));
+  const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/csv"}));
+  a.download="sharpe-brief-"+(LAST.day||"earnings")+".csv";a.click();URL.revokeObjectURL(a.href)
+};
 /* ---------- upload / start ---------- */
 let PENDING=null;
 function showStart(on){
-  $("v-start").classList.toggle("hide",!on);
+  $("v-start").classList.toggle("hide",!on);document.body.classList.toggle("landing",on);
   document.querySelector(".tabs").classList.toggle("hide",on);
   $("briefCtl").classList.toggle("hide",on);
   if(on){["brief","port","set"].forEach(v=>$("v-"+v).classList.add("hide"))}
