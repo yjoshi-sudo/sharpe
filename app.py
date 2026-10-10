@@ -1,9 +1,16 @@
-"""Sharpe: portfolio monitoring agent. Run: python app.py  ->  http://127.0.0.1:5057"""
-import os, threading, uuid, traceback
-from flask import Flask, jsonify, request, render_template, send_file
+"""Sharpe: portfolio monitoring agent.
+
+Stateless JSON API (the browser holds the portfolio and sends it with each request), so the same code runs locally
+(`python app.py`) and on Vercel's serverless Python runtime (`api/index.py` imports `app`).
+"""
+import hmac
+import os
+
+from flask import Flask, jsonify, request, send_from_directory
+
 import core
 
-# optional .env loader (no extra dependency)
+# optional .env loader for local runs (Vercel injects real environment variables)
 _env = os.path.join(core.HERE, '.env')
 if os.path.exists(_env):
     for line in open(_env):
@@ -13,38 +20,51 @@ if os.path.exists(_env):
             if v.strip() and k.strip() not in os.environ:
                 os.environ[k.strip()] = v.strip()
 
-app = Flask(__name__)
-JOBS = {}
+PUBLIC = os.path.join(core.HERE, 'public')
+app = Flask(__name__, static_folder=None)
 
 
+@app.before_request
+def gate():
+    """If SHARPE_PASSWORD is set, every data endpoint needs it in the X-Access-Code header (the UI asks for it once)."""
+    pw = core.env('SHARPE_PASSWORD')
+    if pw and request.path.startswith('/api/') and request.path != '/api/config':
+        if not hmac.compare_digest(request.headers.get('X-Access-Code', '').encode(), pw.encode()):
+            return jsonify(error='Access code required or incorrect.'), 401
+
+
+def api(fn):
+    """Run a handler and turn exceptions into a JSON error the UI can show."""
+    try:
+        return jsonify(fn(request.get_json(silent=True) or {}))
+    except Exception as e:                                   # noqa: BLE001
+        return jsonify(error=str(e)), 400
+
+
+# ---- static files (served by the CDN on Vercel; by Flask locally)
 @app.get('/')
 def index():
-    return render_template('index.html')
+    return send_from_directory(PUBLIC, 'index.html')
 
 
+@app.get('/<path:p>')
+def static_files(p):
+    if p.startswith('api/'):
+        return jsonify(error='not found'), 404
+    return send_from_directory(PUBLIC, p)
+
+
+# ---- API
 @app.get('/api/config')
 def get_config():
-    cfg = core.load_config()
-    return jsonify(cfg=cfg, loaded=core.config_loaded(), status=dict(av=bool(core.env('ALPHAVANTAGE_API_KEY')), llm=core.llm_provider(),
-                                        model=core.env('SHARPE_MODEL') or None,
-                                        news_blocked=os.path.exists(os.path.join(core.CACHE_DIR, 'av_news_blocked'))))
-
-
-@app.get('/sample.csv')
-def sample_csv():
-    return send_file(os.path.join(core.HERE, 'sample_portfolio.csv'), mimetype='text/csv', as_attachment=True,
-                     download_name='sample_portfolio.csv')
-
-
-@app.get('/sample_brokerage.csv')
-def sample_brokerage():
-    return send_file(os.path.join(core.HERE, 'sample_brokerage_export.csv'), mimetype='text/csv', as_attachment=True,
-                     download_name='sample_brokerage_export.csv')
+    return jsonify(auth=bool(core.env('SHARPE_PASSWORD')),
+                   status=dict(av=bool(core.env('ALPHAVANTAGE_API_KEY')), llm=core.llm_provider(),
+                               model=core.env('SHARPE_MODEL') or None))
 
 
 @app.post('/api/upload')
 def upload():
-    """Parse a portfolio CSV (multipart file or JSON {csv}) and return holdings for review. Nothing is saved yet."""
+    """Parse a portfolio CSV (multipart `file` or JSON {csv}); returns holdings and warnings, stores nothing."""
     try:
         if request.files.get('file'):
             text = request.files['file'].read().decode('utf-8-sig', errors='replace')
@@ -56,70 +76,51 @@ def upload():
         return jsonify(error=str(e)), 400
 
 
-@app.post('/api/config')
-def set_config():
-    cfg = request.get_json()
-    for h in cfg['holdings']:
-        h['ticker'] = h['ticker'].strip().upper()
-        h['etf'] = h['etf'].strip().upper()
-    cfg.setdefault('calendar', core.load_config().get('calendar', {}))
-    cfg.setdefault('market', 'SPY')
-    core.save_config(cfg)
-    return jsonify(ok=True, cfg=core.load_config())
-
-
-@app.post('/api/analyze')
-def analyze():
-    day = request.get_json().get('day')
-    fn = core.analyze_earnings if day == 'earnings' else None
-    cfg = core.load_config()
-    job = dict(id=uuid.uuid4().hex[:8], status='running', progress=0.0, log=[], result=None, error=None)
-    JOBS[job['id']] = job
-
-    def run():
-        try:
-            job['result'] = (fn(cfg, log=job['log'].append, progress=lambda f: job.update(progress=f)) if fn else
-                             core.analyze_day(day, cfg, log=job['log'].append, progress=lambda f: job.update(progress=f)))
-            job['status'] = 'done'
-        except Exception as e:
-            traceback.print_exc()
-            job['error'], job['status'] = str(e), 'error'
-    threading.Thread(target=run, daemon=True).start()
-    return jsonify(id=job['id'])
-
-
-@app.get('/api/job/<jid>')
-def job(jid):
-    j = JOBS.get(jid)
-    return (jsonify(j) if j else (jsonify(error='unknown job'), 404))
-
-
 @app.get('/api/days')
 def days():
-    cfg = core.load_config()
-    px = core.fetch_prices([h['ticker'] for h in cfg['holdings']] + [cfg['market']] + sorted({h['etf'] for h in cfg['holdings']}))
-    return jsonify(days=[str(d.date()) for d in px.index[-60:]], latest=str(px.index[-1].date()))
-
-
-@app.get('/api/overview')
-def overview():
     try:
-        return jsonify(core.overview(core.load_config()['holdings']))
-    except Exception as e:
+        px = core.fetch_prices(['SPY'])
+        return jsonify(days=[str(d.date()) for d in px.index[-60:]], latest=str(px.index[-1].date()))
+    except Exception as e:                                   # noqa: BLE001
         return jsonify(error=str(e)), 400
+
+
+# Brief for one day = prep (splits) + macro + one request per holding; the browser assembles the page.
+@app.post('/api/day/prep')
+def day_prep():
+    return api(lambda b: core.prep_day(b['day'], b['holdings'], b.get('market', 'SPY')))
+
+
+@app.post('/api/day/macro')
+def day_macro():
+    return api(lambda b: core.macro_day(b['day'], b['prev'], b['holdings']))
+
+
+@app.post('/api/day/holding')
+def day_holding():
+    return api(lambda b: core.holding_day(b['day'], b['prev'], b['holding'], b['split'], b.get('macro_items', []),
+                                          b.get('cal_text', 'n/a')))
+
+
+@app.post('/api/earn/holding')
+def earn_holding():
+    return api(lambda b: core.earnings_holding(b['holding'], b.get('market', 'SPY')))
+
+
+@app.post('/api/next')
+def nxt():
+    return api(lambda b: dict(next=core.next_earnings([h['ticker'] for h in b['holdings']])))
+
+
+@app.post('/api/overview')
+def overview():
+    return api(lambda b: core.overview(core.normalize_holdings(b['holdings'])))
 
 
 @app.post('/api/optimize')
 def optimize():
-    b = request.get_json() or {}
-    cfg = core.load_config()
-    tickers = b.get('tickers') or [h['ticker'] for h in cfg['holdings']]
-    try:
-        return jsonify(core.optimize(tickers, lo=float(b.get('lo', .05)), hi=float(b.get('hi', .40)),
-                                     rf=float(b.get('rf', .036)), holdout=int(b.get('holdout', 20)),
-                                     current={h['ticker']: h.get('weight') for h in cfg['holdings'] if h.get('weight')}))
-    except Exception as e:
-        return jsonify(error=str(e)), 400
+    return api(lambda b: core.optimize(b['holdings'], lo=float(b.get('lo', .05)), hi=float(b.get('hi', .40)),
+                                       rf=float(b.get('rf', .036)), holdout=int(b.get('holdout', 20))))
 
 
 if __name__ == '__main__':

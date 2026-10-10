@@ -17,9 +17,15 @@ import numpy as np
 import pandas as pd
 import requests
 
+from defaults import CALENDAR, CONTEXT, HOLD_CONTEXT
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(HERE, 'cache')
-os.makedirs(CACHE_DIR, exist_ok=True)
+# Vercel's filesystem is read-only except /tmp, so cache there (best effort: a cold instance starts empty).
+CACHE_DIR = os.environ.get('SHARPE_CACHE') or (os.path.join('/tmp', 'sharpe_cache') if os.environ.get('VERCEL') else os.path.join(HERE, 'cache'))
+try:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+except OSError:
+    pass
 
 EST_DAYS = 120          # estimation window (>= 100 trading days, per the Return Split Method)
 SIGMA_FLAG = 2.0
@@ -71,35 +77,25 @@ def name_variants(h):
     return [v for v in dict.fromkeys(o for o in out if len(o) >= 3)]
 
 
-def config_loaded():
-    return os.path.exists(os.path.join(HERE, 'holdings.json'))
-
-
-def load_config():
-    path = os.path.join(HERE, 'holdings.json')
-    if not os.path.exists(path):
-        path = os.path.join(HERE, 'holdings.default.json')
-    with open(path) as f:
-        cfg = json.load(f)
-    for h in cfg['holdings']:
-        h.setdefault('name', h['ticker'])
-        h.setdefault('thesis', '')
-        h.setdefault('chain', '')
-        h.setdefault('guide', ['', '', ''])
-        if not h.get('pattern'):
-            nm = re.escape(short_name(h['name']).lower())
-            h['pattern'] = (rf'\b{nm}\b|' if nm else '') + rf'\b{re.escape(h["ticker"].lower())}\b'
-    with open(os.path.join(HERE, 'holdings.default.json')) as f:
-        dflt = json.load(f)
-    cfg['calendar'] = dflt.get('calendar', {})
-    cfg['context'] = dflt.get('context', [])
-    cfg.setdefault('market', 'SPY')
-    return cfg
-
-
-def save_config(cfg):
-    with open(os.path.join(HERE, 'holdings.json'), 'w') as f:
-        json.dump(cfg, f, indent=1)
+def normalize_holdings(holdings):
+    """Fill defaults on holdings sent by the browser (the server keeps no portfolio): thesis/chain notes for the team's
+    original tickers, a sector ETF, and the regex used to spot the company in headlines."""
+    out = []
+    for h in holdings:
+        h = dict(h)
+        tk = str(h['ticker']).strip().upper()
+        ctx = HOLD_CONTEXT.get(tk, {})
+        h['ticker'] = tk
+        h['etf'] = (h.get('etf') or 'SPY').strip().upper()
+        h['name'] = h.get('name') or tk
+        h['thesis'] = h.get('thesis') or ctx.get('thesis', '')
+        h['chain'] = h.get('chain') or ctx.get('chain', '')
+        g = h.get('guide')
+        h['guide'] = g if g and any(g) else ctx.get('guide', ['', '', ''])
+        alts = [rf'\b{re.escape(v.lower())}\b' for v in name_variants(h)] + [rf'\b{re.escape(tk.lower())}\b']
+        h['pattern'] = '|'.join(alts)
+        out.append(h)
+    return out
 
 
 # ----------------------------------------------------------------------------- prices
@@ -107,28 +103,37 @@ def _cache_path(kind, key):
     return os.path.join(CACHE_DIR, f'{kind}_{hashlib.md5(key.encode()).hexdigest()[:16]}.json')
 
 
-def fetch_prices(tickers, max_age_hours=6):
-    """Dividend-adjusted daily closes from Yahoo's chart endpoint. Cached for a few hours."""
-    tickers = sorted(set(tickers))
-    path = _cache_path('px', ','.join(tickers))
+def _px_series(t, max_age_hours=6):
+    path = _cache_path('px1', t)
     if os.path.exists(path) and time.time() - os.path.getmtime(path) < max_age_hours * 3600:
-        px = pd.read_json(path, orient='split')
-        px.index = pd.to_datetime(px.index)
-        return px
-    cols = {}
-    for t in tickers:
-        r = requests.get(f'https://query1.finance.yahoo.com/v8/finance/chart/{t}',
-                         params={'range': '2y', 'interval': '1d'}, headers=UA, timeout=30)
-        r.raise_for_status()
-        res = r.json()['chart']['result']
-        if not res:
-            raise ValueError(f'No price data for {t}')
-        res = res[0]
-        ts = pd.to_datetime(res['timestamp'], unit='s').normalize()
-        cols[t] = pd.Series(res['indicators']['adjclose'][0]['adjclose'], index=ts)
-    px = pd.DataFrame(cols).dropna()
-    px = px[~px.index.duplicated(keep='last')]
-    px.to_json(path, orient='split', date_format='iso')
+        try:
+            d = json.load(open(path))
+            return pd.Series(d['v'], index=pd.to_datetime(d['t']))
+        except Exception:
+            pass
+    r = requests.get(f'https://query1.finance.yahoo.com/v8/finance/chart/{t}', params={'range': '2y', 'interval': '1d'},
+                     headers=UA, timeout=30)
+    r.raise_for_status()
+    res = r.json()['chart']['result']
+    if not res:
+        raise ValueError(f'No price data for {t}')
+    res = res[0]
+    ts = pd.to_datetime(res['timestamp'], unit='s').normalize()
+    ser = pd.Series(res['indicators']['adjclose'][0]['adjclose'], index=ts)
+    ser = ser[~ser.index.duplicated(keep='last')]
+    try:
+        json.dump(dict(t=[str(x.date()) for x in ser.index], v=[None if pd.isna(v) else float(v) for v in ser.values]), open(path, 'w'))
+    except OSError:
+        pass
+    return ser
+
+
+def fetch_prices(tickers, max_age_hours=6):
+    """Dividend-adjusted daily closes from Yahoo's chart endpoint (fetched in parallel, cached per ticker)."""
+    tickers = sorted(set(tickers))
+    with ThreadPoolExecutor(4) as ex:
+        series = list(ex.map(lambda t: _px_series(t, max_age_hours), tickers))
+    px = pd.DataFrame(dict(zip(tickers, series))).dropna()
     return px
 
 
@@ -179,12 +184,10 @@ def av_get(name, params, budget, log):
     if msg and len(data) <= 2:       # rate-limit message: never cache it
         log(f'Alpha Vantage: {msg[:140]}')
         if 'premium' in msg.lower():
-            raise RuntimeError('Alpha Vantage says NEWS_SENTIMENT is a premium endpoint for this API key, so no news was retrieved')
-        time.sleep(12)
-        return None
+            raise RuntimeError('Alpha Vantage says this endpoint is premium for this API key')
+        raise RuntimeError('RATE_LIMIT: ' + msg[:120])
     with open(path, 'w') as f:
         json.dump(data, f)
-    time.sleep(float(env('AV_PAUSE', '12')))
     return data
 
 
@@ -281,7 +284,7 @@ def sec_cik_map():
         return {v['ticker'].upper(): int(v['cik_str']) for v in json.load(f).values()}
 
 
-def sec_filings(tk, cik, trading_days, day, ttl_hours=3):
+def sec_filings(tk, cik, prev_str, day_str, ttl_hours=3):
     path = _cache_path('sec', f'sub{cik}')
     if not (os.path.exists(path) and time.time() - os.path.getmtime(path) < ttl_hours * 3600):
         r = requests.get(f'https://data.sec.gov/submissions/CIK{cik:010d}.json', headers=sec_headers(), timeout=60)
@@ -295,7 +298,7 @@ def sec_filings(tk, cik, trading_days, day, ttl_hours=3):
     out = []
     for _, x in rec.iterrows():
         acc = pd.Timestamp(x.acceptanceDateTime).tz_convert('America/New_York')
-        if to_trading_day(acc, trading_days) != day:
+        if not (pd.Timestamp(f'{prev_str} 16:00', tz='America/New_York') <= acc < pd.Timestamp(f'{day_str} 16:00', tz='America/New_York')):
             continue
         codes = [c.strip() for c in str(x.get('items', '')).split(',') if c.strip() and c.strip() != '9.01']
         imp = max([ITEM_IMPACT.get(c, 3 if c == '5.02' else 2) for c in codes], default=None)
@@ -448,10 +451,24 @@ MACRO_KW = re.compile(r'\b(cpi|inflation|fed|federal reserve|fomc|rate (hike|cut
                       r'unemployment|retail sales|treasury|yield|gdp|housing|ppi|economy|economic|tariff|oil)\b', re.I)
 
 
-def analyze_day(day_str, cfg, log=print, progress=lambda f: None):
-    """Run the full pipeline for one trading day. Returns a JSON-able dict."""
-    warnings = []
-    hs, market = cfg['holdings'], cfg.get('market', 'SPY')
+def _in_window(time_published, prev_str, day_str):
+    """True if an ET timestamp falls in [prev trading day 4pm, this trading day 4pm): the news that can move `day`."""
+    try:
+        ts = pd.to_datetime(time_published, format='%Y%m%dT%H%M%S').tz_localize(AV_TZ, ambiguous='NaT', nonexistent='NaT')
+        start = pd.Timestamp(f'{prev_str} 16:00').tz_localize(AV_TZ)
+        end = pd.Timestamp(f'{day_str} 16:00').tz_localize(AV_TZ)
+        return bool(pd.notna(ts) and start <= ts < end)
+    except Exception:
+        return False
+
+
+NEWS_NOTE = ('News comes from Google News RSS (keyless): headlines only, no per-ticker relevance or sentiment scores, so it is '
+             'noisier than a premium news feed.')
+
+
+def prep_day(day_str, holdings, market='SPY'):
+    """Step 1 of a brief: prices and the two-factor return split for every holding (one request, no news)."""
+    hs = normalize_holdings(holdings)
     etfs = sorted({h['etf'] for h in hs})
     px = fetch_prices([h['ticker'] for h in hs] + [market] + etfs)
     rets = px.pct_change().iloc[1:]
@@ -459,305 +476,263 @@ def analyze_day(day_str, cfg, log=print, progress=lambda f: None):
     day = pd.Timestamp(day_str)
     if day not in days:
         raise ValueError(f'{day_str} is not a trading day in the price data (latest: {days.max().date()})')
-    progress(0.05)
-
-    # --- return split
-    log('Splitting returns (market / sector / company-specific)…')
-    rows = []
-    for h in hs:
-        s = split_day(rets, h['ticker'], h['etf'], market, day)
-        rows.append(dict(h=h, split=s, co=None, sector=None, macro=None, counts=[0, 0, 0]))
-    progress(0.15)
-
-    # --- news
-    news_ok = True
-    cands, scored = pd.DataFrame(), pd.DataFrame()
-    macro_titles = []
     prev = days[days < day].max()
-    t_from = f"{prev:%Y%m%d}T1600"
-    t_to = f"{day:%Y%m%d}T1600"
-    if True:
-        budget = Budget()
-        feeds, macro_rows = {}, []
-        blocked = os.path.join(CACHE_DIR, 'av_news_blocked')
-        use_av = bool(env('ALPHAVANTAGE_API_KEY')) and not os.path.exists(blocked)
-        if use_av:
+    splits, warnings = {}, []
+    for h in hs:
+        try:
+            splits[h['ticker']] = split_day(rets, h['ticker'], h['etf'], market, day)
+        except Exception as e:
+            warnings.append(f'{h["ticker"]}: could not compute the return split ({e})')
+    return dict(day=day_str, prev=str(prev.date()), latest=str(days.max().date()), splits=splits, warnings=warnings)
+
+
+def macro_day(day_str, prev_str, holdings):
+    """Step 2: the day's economy-wide headlines, the calendar entry, and (if there is no calendar entry) a one-line summary."""
+    hs = normalize_holdings(holdings)
+    warnings = [NEWS_NOTE]
+    d_from, d_to = prev_str, f'{pd.Timestamp(day_str) + timedelta(days=1):%Y-%m-%d}'
+    rows = []
+    for topic in MACRO_TOPICS:
+        try:
+            rows += gn_search(GN_MACRO[topic], d_from, d_to)
+        except Exception as e:
+            warnings.append(f'Macro news fetch failed ({topic}): {e}')
+    seen, items = set(), []
+    for r in rows:
+        k = norm_title(r['title'])
+        if not r['title'] or k in seen or not _in_window(r['time_published'], prev_str, day_str):
+            continue
+        seen.add(k)
+        if not MACRO_KW.search(r['title'] + ' ' + str(r.get('summary', ''))) or any(_mentions(h, r['title']) for h in hs):
+            continue                       # keep economy-wide stories, skip single-company ones
+        items.append(dict(title=r['title'], url=r['url'], source=r['source'], summary=r.get('summary', ''),
+                          time_published=r['time_published']))
+    items = items[:K_MACRO]
+    entry = CALENDAR.get(day_str)
+    if not entry:
+        line = None
+        if llm_provider() and items:
+            o = llm('Write ONE sentence (<= 30 words) starting with "Macro today:" that summarizes the economy-wide news in these headlines '
+                    'for a portfolio brief. Use only facts in the headlines. Do not mention any stock price or move. Plain English, no em dashes. '
+                    'Return JSON only: {"summary": "..."}', json.dumps([i['title'] for i in items]), 150)
+            line = (o or {}).get('summary')
+        entry = dict(summary=line or 'Macro today: no scheduled-release calendar for this day.', events=[], generated=bool(line))
+    return dict(calendar=entry, context=CONTEXT, items=items, cal_text=cal_text(entry), warnings=warnings)
+
+
+def holding_day(day_str, prev_str, holding, split, macro_items, cal_txt='n/a'):
+    """Step 3 (one request per holding): news + filings -> classify -> score -> attention rule -> summary."""
+    h = normalize_holdings([holding])[0]
+    tk, warnings = h['ticker'], []
+    d_from, d_to = prev_str, f'{pd.Timestamp(day_str) + timedelta(days=1):%Y-%m-%d}'
+    try:
+        rows = gn_search(f'({gn_terms(h)})', d_from, d_to)
+    except Exception as e:
+        rows = []
+        warnings.append(f'{tk}: news fetch failed ({e})')
+    seen, own = set(), []
+    for r in rows:
+        k = norm_title(r['title'])
+        if not r['title'] or k in seen or not _in_window(r['time_published'], prev_str, day_str):
+            continue
+        seen.add(k)
+        own.append(dict(r, kind='company_feed', named=_mentions(h, r['title'])))
+    own.sort(key=lambda r: not r['named'])        # headlines that name the company first
+    items = own[:K_COMPANY] + [dict(m, kind='macro_feed') for m in (macro_items or [])]
+    n_reviewed = len(items)
+
+    if items and not llm_provider():
+        warnings.append('No LLM key configured: found articles were not classified or scored.')
+        items = []
+    if items:
+        def classify(it):
+            u = (f'Holding: {tk} ({h["name"]})\nValue chain: {h["chain"]}\n\n'
+                 f'Article title: {it["title"]}\nPublisher: {it.get("source")}\nSummary: {str(it.get("summary", ""))[:700]}')
+            return llm(CLASSIFY, u, 200) or {}
+        with ThreadPoolExecutor(8) as ex:
+            outs = list(ex.map(classify, items))
+        for it, o in zip(items, outs):
+            lab = str(o.get('label', 'error')).strip().lower().replace(' ', '_')
+            it['label'] = lab if lab in ('company', 'sector', 'macro', 'not_relevant') else 'error'
+            it['value_chain'] = bool(o.get('value_chain'))
+            it['vc_tag'], it['channel'] = o.get('vc_tag'), o.get('channel')
+        rel = [it for it in items if it['label'] in ('company', 'sector', 'macro')]
+        g3, g2, g1 = (list(h.get('guide') or []) + ['', '', ''])[:3]
+
+        def score(it):
+            prior = [x['title'] for x in items if x['kind'] == 'company_feed' and x is not it][:12]
+            u = (f'Holding: {tk} ({h["name"]})\nThesis: {h["thesis"]}\nItem type: {it["label"]}\n'
+                 f'Value chain: {h["chain"]}\nThesis relevance examples: 3 = {g3}; 2 = {g2}; 1 = {g1}\n'
+                 f'Macro calendar today: {cal_txt}\n')
+            if prior:
+                u += 'Other headlines for this holding today:\n' + '\n'.join(f'- {t}' for t in prior) + '\n'
+            u += f'\nArticle title: {it["title"]}\nPublisher: {it.get("source")}\nSummary: {str(it.get("summary", ""))[:700]}'
+            return llm(SCORE, u, 200) or {}
+        with ThreadPoolExecutor(8) as ex:
+            souts = list(ex.map(score, rel))
+
+        def clip(v):
             try:
-                for i, h in enumerate(hs):
-                    log(f'Fetching news for {h["ticker"]} (Alpha Vantage)…')
-                    d = av_get(f'news_{h["ticker"]}_{t_from}_{t_to}',
-                               dict(function='NEWS_SENTIMENT', tickers=h['ticker'], time_from=t_from, time_to=t_to,
-                                    sort='EARLIEST', limit=1000), budget, log)
-                    feeds[h['ticker']] = parse_feed(d)
-                    progress(0.15 + 0.1 * (i + 1) / len(hs))
-                for topic in MACRO_TOPICS:
-                    log(f'Fetching macro news ({topic})…')
-                    d = av_get(f'macro_{topic}_{t_from}_{t_to}',
-                               dict(function='NEWS_SENTIMENT', topics=topic, time_from=t_from, time_to=t_to,
-                                    sort='EARLIEST', limit=1000), budget, log)
-                    macro_rows += parse_feed(d)
-            except Exception as e:
-                feeds, macro_rows = {}, []
-                if 'premium' in str(e).lower():
-                    open(blocked, 'w').write(str(e))      # remember, so we do not waste a call every run
-                warnings.append(f'{e}.')
-                use_av = False
-        if not use_av:
-            if not env('ALPHAVANTAGE_API_KEY'):
-                warnings.append('No Alpha Vantage key.')
-            warnings.append('News comes from Google News RSS (keyless): headlines only, no per-ticker relevance or sentiment scores, so '
-                            'it is noisier than Alpha Vantage News & Sentiment.')
-            d_from, d_to = f'{prev:%Y-%m-%d}', f'{day + timedelta(days=1):%Y-%m-%d}'
-            try:
-                for i, h in enumerate(hs):
-                    log(f'Fetching news for {h["ticker"]} (Google News)…')
-                    feeds[h['ticker']] = gn_search(f'({gn_terms(h)})', d_from, d_to)
-                    progress(0.15 + 0.1 * (i + 1) / len(hs))
-                for topic in MACRO_TOPICS:
-                    log(f'Fetching macro news ({topic})…')
-                    macro_rows += gn_search(GN_MACRO[topic], d_from, d_to)
-            except Exception as e:
-                warnings.append(f'Google News fetch stopped early: {e}')
-        # own feeds
-        pool_rows = []
-        for tk, feed in feeds.items():
-            for a in feed:
-                tsm = {x['ticker']: x for x in a['ticker_sentiment']}
-                try:
-                    rel = float(tsm.get(tk, {}).get('relevance_score', 'nan'))
-                except ValueError:
-                    rel = float('nan')
-                pool_rows.append(dict(a, ticker=tk, relevance_score=rel))
-        pool = frame_news(pool_rows, days)
-        if not pool.empty:
-            pool = pool[pool.trading_day == day].copy()
-        macro = frame_news(macro_rows, days)
-        if not macro.empty:
-            macro = macro[macro.trading_day == day].copy()
-            macro = macro.drop_duplicates('url').copy()
-            macro['tk'] = macro.title.map(norm_title)
-            macro = macro.drop_duplicates('tk')
+                return int(min(3, max(1, int(v))))
+            except Exception:
+                return None
+        for it, o in zip(rel, souts):
+            it['impact'], it['new_info'] = clip(o.get('impact')), clip(o.get('new_info'))
+            it['thesis_rel'], it['one_line'] = clip(o.get('thesis_relevance')), o.get('one_line')
 
-        # candidate selection: up to K_COMPANY per holding (named in headline first, then AV relevance)
-        cand = []
-        uniq = pool.drop_duplicates('url') if not pool.empty else pool
-        for h in hs:
-            tk = h['ticker']
-            if pool.empty:
-                continue
-            own = pool[pool.ticker == tk].copy()
-            own['via'] = 'own feed'
-            extra = uniq[(uniq.ticker != tk) & (uniq.title.map(lambda t: _mentions(h, t)) |
-                                                 uniq.summary.map(lambda t: _mentions(h, str(t)[:300])))].copy()
-            extra = extra[~extra.url.isin(own.url)]
-            extra['via'] = 'other holding feed'
-            extra['relevance_score'] = np.nan
-            both = pd.concat([own, extra])
-            both = both.assign(ticker=tk, kind='company_feed')
-            both['named'] = both.title.map(lambda t: _mentions(h, t))
-            both['tk'] = both.title.map(norm_title)
-            both = both.drop_duplicates('tk')
-            both = both.sort_values(['named', 'relevance_score'], ascending=False).head(K_COMPANY)
-            cand.append(both)
-        if not macro.empty:
-            def single_company(r):
-                return any(_mentions(h, r.title) for h in hs)
-            m = macro[macro.apply(lambda r: bool(MACRO_KW.search(r.title + ' ' + str(r.summary))) and not single_company(r), axis=1)]
-            m = m.head(K_MACRO)
-            macro_titles = m.title.tolist()
-            for h in hs:
-                cand.append(m.assign(ticker=h['ticker'], kind='macro_feed', via='macro feed', relevance_score=np.nan))
-        cands = pd.concat(cand, ignore_index=True) if cand else pd.DataFrame()
-
-    # --- LLM classify + score
-    cal_entry = cfg.get('calendar', {}).get(day_str)
-    ctx_cal = cal_text(cal_entry)
-    if not cands.empty:
-        if not llm_provider():
-            warnings.append('No OPENROUTER_API_KEY / ANTHROPIC_API_KEY: found articles are listed but not classified or scored.')
-            cands = pd.DataFrame()
-        else:
-            hmap = {h['ticker']: h for h in hs}
-            cands['cid'] = range(len(cands))
-            log(f'Classifying {len(cands)} article-holding pairs with the LLM…')
-
-            def classify(r):
-                h = hmap[r.ticker]
-                u = (f'Holding: {h["ticker"]} ({h["name"]})\nValue chain: {h["chain"]}\n\n'
-                     f'Article title: {r.title}\nPublisher: {r.source}\nSummary: {str(r.summary)[:700]}')
-                return llm(CLASSIFY, u, 200) or {}
-            with ThreadPoolExecutor(8) as ex:
-                outs = list(ex.map(classify, cands.itertuples()))
-            cands['label'] = [str(o.get('label', 'error')).strip().lower().replace(' ', '_') for o in outs]
-            cands.loc[~cands.label.isin(['company', 'sector', 'macro', 'not_relevant']), 'label'] = 'error'
-            cands['value_chain'] = [bool(o.get('value_chain')) for o in outs]
-            cands['vc_tag'] = [o.get('vc_tag') for o in outs]
-            cands['channel'] = [o.get('channel') for o in outs]
-            progress(0.55)
-
-            rel = cands[cands.label.isin(['company', 'sector', 'macro'])]
-            log(f'Scoring {len(rel)} relevant items…')
-
-            def score(r):
-                h = hmap[r.ticker]
-                g3, g2, g1 = (list(h.get('guide') or []) + ['', '', ''])[:3]
-                prior = cands[(cands.ticker == r.ticker) & (cands.kind == 'company_feed') & (cands.cid < r.cid)].title.head(12).tolist()
-                u = (f'Holding: {h["ticker"]} ({h["name"]})\nThesis: {h["thesis"]}\nItem type: {r.label}\n'
-                     f'Value chain: {h["chain"]}\nThesis relevance examples: 3 = {g3}; 2 = {g2}; 1 = {g1}\n'
-                     f'Macro calendar today: {ctx_cal}\n')
-                if prior:
-                    u += 'Earlier headlines for this holding today:\n' + '\n'.join(f'- {t}' for t in prior) + '\n'
-                u += f'\nArticle title: {r.title}\nPublisher: {r.source}\nSummary: {str(r.summary)[:700]}'
-                return llm(SCORE, u, 200) or {}
-            with ThreadPoolExecutor(8) as ex:
-                souts = list(ex.map(score, rel.itertuples()))
-
-            def clip(v):
-                try:
-                    return int(min(3, max(1, int(v))))
-                except Exception:
-                    return None
-            sc = pd.DataFrame({'cid': rel.cid.values, 'impact': [clip(o.get('impact')) for o in souts],
-                               'new_info': [clip(o.get('new_info')) for o in souts],
-                               'thesis_rel': [clip(o.get('thesis_relevance')) for o in souts],
-                               'one_line': [o.get('one_line') for o in souts]})
-            scored = cands.merge(sc, on='cid', how='left')
-    progress(0.75)
-
-    # --- SEC filings
-    sec_ok = True
+    # --- SEC filings (impact by item code)
+    co = None
     try:
         ciks = sec_cik_map()
-    except Exception as e:
-        sec_ok = False
-        warnings.append(f'SEC EDGAR unavailable: {e}')
-    # --- assemble per holding
-    for r in rows:
-        h = r['h']
-        tk = h['ticker']
-        g = scored[scored.ticker == tk] if not scored.empty else scored
-        co = None
-        if sec_ok and tk in ciks:
-            try:
-                f = sec_filings(tk, ciks[tk], days, day)
-            except Exception as e:
-                f = []
-                warnings.append(f'SEC filings for {tk} failed: {e}')
+        if tk in ciks:
+            f = sec_filings(tk, ciks[tk], prev_str, day_str)
             if f:
                 fi = f[0]
                 co = dict(type=f"SEC {fi['form'].replace('/A', '')}", impact=fi['impact'] or 2, newinfo=3,
                           title=fi['description'] or fi['form'], publisher='SEC EDGAR', url=fi['url'],
                           text='Items ' + ', '.join(fi['items']) if fi['items'] else None)
-        sect = se = ma = None
-        co_row = None
-        if len(g):
-            comp = g[g.label == 'company'].dropna(subset=['impact'])
-            if not comp.empty:
-                co_row = comp.sort_values(['impact', 'new_info', 'thesis_rel'], ascending=False).iloc[0]
-                if co is None:
-                    co = dict(type='News', impact=int(co_row.impact), newinfo=int(co_row.new_info), title=co_row.title,
-                              publisher=co_row.source, url=co_row.url, text=co_row.one_line)
-            sect_df = g[(g.label == 'sector') & (g.thesis_rel >= 2)]
-            mac_df = g[(g.label == 'macro') & (g.thesis_rel >= 2)]
-            if not sect_df.empty:
-                se = sect_df.assign(vc=sect_df.value_chain.astype(int)).sort_values(['thesis_rel', 'vc', 'impact'], ascending=False).iloc[0]
-                sect = dict(text=se.one_line, vc=se.vc_tag if se.value_chain else None, title=se.title, publisher=se.source, url=se.url)
-            if not mac_df.empty:
-                ma = mac_df.sort_values(['thesis_rel', 'impact'], ascending=False).iloc[0]
-                macro_ = dict(text=ma.one_line, ch=ma.channel, title=ma.title, publisher=ma.source, url=ma.url)
-            else:
-                macro_ = None
-        else:
-            macro_ = None
-        thesis = max([int(x.thesis_rel) for x in (co_row, se, ma) if x is not None and pd.notna(x.thesis_rel)] or [1])
-        r.update(co=co, sector=sect, macro=macro_, thesis=thesis,
-                 counts=[int(len(g)), int((g.label != 'not_relevant').sum()) if len(g) else 0,
-                         int(sum(x is not None for x in (co, sect, macro_)))])
-        r['level'] = attention(r['split']['z'], co)
+    except Exception as e:
+        warnings.append(f'{tk}: SEC filings unavailable ({e})')
 
-    # --- summaries
-    if llm_provider() and not scored.empty:
-        log('Writing summaries…')
+    def best(cands, key):
+        return max(cands, key=key) if cands else None
+    scored = [it for it in items if it.get('impact')]
+    co_row = best([it for it in scored if it['label'] == 'company'], lambda i: (i['impact'], i['new_info'] or 0, i['thesis_rel'] or 0))
+    if co is None and co_row:
+        co = dict(type='News', impact=co_row['impact'], newinfo=co_row['new_info'] or 1, title=co_row['title'],
+                  publisher=co_row.get('source'), url=co_row.get('url'), text=co_row.get('one_line'))
+    se = best([it for it in scored if it['label'] == 'sector' and (it['thesis_rel'] or 0) >= 2],
+              lambda i: (i['thesis_rel'], int(i['value_chain']), i['impact']))
+    ma = best([it for it in scored if it['label'] == 'macro' and (it['thesis_rel'] or 0) >= 2], lambda i: (i['thesis_rel'], i['impact']))
+    sector = None if not se else dict(text=se.get('one_line'), vc=se.get('vc_tag') if se['value_chain'] else None,
+                                      title=se['title'], publisher=se.get('source'), url=se.get('url'))
+    macro_ = None if not ma else dict(text=ma.get('one_line'), ch=ma.get('channel'), title=ma['title'],
+                                      publisher=ma.get('source'), url=ma.get('url'))
+    thesis = max([x['thesis_rel'] for x in (co_row, se, ma) if x and x.get('thesis_rel')] or [1])
+    level = attention(split['z'], co)
 
-        def summ(r):
-            h = r['h']
-            items = {k: (r[k] and {kk: r[k].get(kk) for kk in ('title', 'text', 'ch', 'vc', 'type', 'impact', 'newinfo')})
-                     for k in ('co', 'sector', 'macro')}
-            items = {'company': items['co'], 'sector': items['sector'], 'macro': items['macro']}
-            z = r['split']['z']
-            user = json.dumps(dict(holding=h['ticker'], name=h['name'], thesis=h['thesis'], day=day_str, macro_calendar=ctx_cal,
-                                   company_specific_move='large (>= 2 sigma)' if abs(z) >= 2 else 'within normal range',
-                                   attention=r['level'], attention_rule=WHY_RULE[r['level']], items=items), ensure_ascii=False)
-            o = llm(SUMMARIZE, user, 400)
-            if o and describes_price(o, h):
-                o2 = llm(SUMMARIZE, user + '\n\nYour last answer described the stock price or its move. Rewrite it about the news only.', 400)
-                o = o2 if o2 and not describes_price(o2, h) else None
-            return o or {}
-        with ThreadPoolExecutor(5) as ex:
-            souts = list(ex.map(summ, rows))
-    else:
-        souts = [{} for _ in rows]
-    out_rows = []
-    for r, o in zip(rows, souts):
-        h = r['h']
-        fallback = (r['co'] or r['sector'] or r['macro'] or {}).get('title') or 'No relevant new information'
-        for k, key in (('co', 'company'), ('sector', 'sector'), ('macro', 'macro')):
-            if r[k] is not None and o.get(key):
-                r[k]['text'] = o[key]
-            if r[k] is not None and not r[k].get('text'):
-                r[k]['text'] = r[k].get('title')
-        out_rows.append(dict(ticker=h['ticker'], name=h['name'], etf=h['etf'], thesis_text=h['thesis'], level=r['level'],
-                             headline=o.get('headline') or fallback[:90], why=o.get('why') or '', thesis=r['thesis'],
-                             split=r['split'], company=r['co'], sector=r['sector'], macro=r['macro'], counts=r['counts']))
-    order = {'High': 0, 'Medium': 1, 'Low': 2}
-    out_rows.sort(key=lambda x: (order[x['level']], -x['thesis'], -abs(x['split']['z'])))
-    progress(1.0)
-    if not cal_entry:
-        summ_line = None
-        if llm_provider() and macro_titles:
-            o = llm('Write ONE sentence (<= 30 words) starting with "Macro today:" that summarizes the economy-wide news in these headlines '
-                    'for a portfolio brief. Use only facts in the headlines. Do not mention any stock price or move. Plain English, no em dashes. '
-                    'Return JSON only: {"summary": "..."}', json.dumps(macro_titles), 150)
-            summ_line = (o or {}).get('summary')
-        cal_entry = dict(summary=summ_line or 'Macro today: no scheduled-release calendar for this day.', events=[], generated=bool(summ_line))
-    nxt = next_earnings([h['ticker'] for h in hs])
-    for x in out_rows:
-        x['next_earnings'] = nxt.get(x['ticker'])
-    return dict(day=day_str, calendar=cal_entry, context=cfg.get('context', []), rows=out_rows, warnings=warnings,
-                latest_day=str(days.max().date()), llm=llm_provider(), news=news_ok, stress=False)
+    # --- summary (one LLM call, price-claim guardrail, one retry)
+    o = {}
+    if llm_provider() and items:
+        layers = {'company': co and {k: co.get(k) for k in ('title', 'text', 'type', 'impact', 'newinfo')},
+                  'sector': sector and {k: sector.get(k) for k in ('title', 'text', 'vc')},
+                  'macro': macro_ and {k: macro_.get(k) for k in ('title', 'text', 'ch')}}
+        z = split['z']
+        user = json.dumps(dict(holding=tk, name=h['name'], thesis=h['thesis'], day=day_str, macro_calendar=cal_txt,
+                               company_specific_move='large (>= 2 sigma)' if abs(z) >= 2 else 'within normal range',
+                               attention=level, attention_rule=WHY_RULE[level], items=layers), ensure_ascii=False)
+        o = llm(SUMMARIZE, user, 400) or {}
+        if o and describes_price(o, h):
+            o2 = llm(SUMMARIZE, user + '\n\nYour last answer described the stock price or its move. Rewrite it about the news only.', 400)
+            o = o2 if o2 and not describes_price(o2, h) else {}
+    fallback = (co or sector or macro_ or {}).get('title') or 'No relevant new information'
+    for lay, key in ((co, 'company'), (sector, 'sector'), (macro_, 'macro')):
+        if lay is not None:
+            lay['text'] = o.get(key) or lay.get('text') or lay.get('title')
+    row = dict(ticker=tk, name=h['name'], etf=h['etf'], thesis_text=h['thesis'], level=level,
+               headline=o.get('headline') or fallback[:90], why=o.get('why') or '', thesis=thesis, split=split,
+               company=co, sector=sector, macro=macro_,
+               counts=[n_reviewed, sum(1 for it in items if it.get('label') in ('company', 'sector', 'macro')),
+                       sum(x is not None for x in (co, sector, macro_))])
+    return dict(row=row, warnings=warnings)
 
 
 # ----------------------------------------------------------------------------- portfolio
-def optimize(tickers, lo=0.05, hi=0.40, rf=0.036, holdout=20, lookback=504, current=None):
-    """Max-Sharpe long-only weights. Trained on everything except the last `holdout` trading days."""
-    from scipy.optimize import minimize
+def _proj(v, lo, hi):
+    """Euclidean projection of v onto {w : lo <= w <= hi, sum(w) = 1} (bisection on the shift)."""
+    a, b = float(v.min() - hi), float(v.max() - lo)
+    for _ in range(60):
+        tau = (a + b) / 2
+        if np.clip(v - tau, lo, hi).sum() > 1:
+            a = tau
+        else:
+            b = tau
+    return np.clip(v - (a + b) / 2, lo, hi)
+
+
+def _max_sharpe(mu, cov, rf, lo, hi, starts=12):
+    """Projected gradient ascent on the Sharpe ratio from several starts (numpy only, so no scipy on serverless)."""
+    rng = np.random.default_rng(0)
+    n = len(mu)
+
+    def f(w):
+        return (w @ mu - rf) / np.sqrt(w @ cov @ w)
+    best = None
+    for s in range(starts):
+        w = _proj(np.ones(n) / n if s == 0 else rng.dirichlet(np.ones(n)), lo, hi)
+        step = 0.5
+        for _ in range(400):
+            sg = np.sqrt(w @ cov @ w)
+            g = mu / sg - (w @ mu - rf) * (cov @ w) / sg ** 3
+            moved = False
+            while step > 1e-9:
+                w2 = _proj(w + step * g, lo, hi)
+                if f(w2) >= f(w) - 1e-12:
+                    moved = True
+                    break
+                step /= 2
+            if not moved or np.abs(w2 - w).max() < 1e-10:
+                break
+            w, step = w2, min(step * 1.5, 2.0)
+        if best is None or f(w) > f(best):
+            best = w
+    return best
+
+
+def _min_var(cov, lo, hi):
+    n = len(cov)
+    w = _proj(np.ones(n) / n, lo, hi)
+    L = float(np.linalg.eigvalsh(cov).max())
+    for _ in range(3000):
+        w2 = _proj(w - (cov @ w) / L, lo, hi)
+        if np.abs(w2 - w).max() < 1e-12:
+            break
+        w = w2
+    return w
+
+
+def _frontier(mu, cov, lo, hi, extra):
+    """Upper envelope of sampled feasible portfolios (stand-in for an exact solver)."""
+    rng = np.random.default_rng(1)
+    n = len(mu)
+    pts = [(float(np.sqrt(w @ cov @ w)), float(w @ mu)) for w in extra]
+    for _ in range(3000):
+        w = _proj(rng.dirichlet(np.ones(n) * rng.choice([0.3, 1.0, 3.0])), lo, hi)
+        pts.append((float(np.sqrt(w @ cov @ w)), float(w @ mu)))
+    pts.sort()
+    env, top = [], -1e9
+    for v, r_ in pts:
+        if r_ > top + 1e-9:
+            env.append([v, r_])
+            top = r_
+    if len(env) > 40:
+        env = [env[int(i)] for i in np.linspace(0, len(env) - 1, 40)]
+    return env
+
+
+def optimize(holdings, lo=0.05, hi=0.40, rf=0.036, holdout=20, lookback=504):
+    """Optional what-if: back-test alternative weightings of the holdings. Trained on all but the last `holdout` days."""
+    hs = normalize_holdings(holdings)
+    tickers = [h['ticker'] for h in hs]
     n = len(tickers)
     if n < 2:
-        raise ValueError('Need at least 2 tickers')
+        raise ValueError('Need at least 2 holdings')
     if lo * n > 1 or hi * n < 1:
-        raise ValueError(f'Infeasible bounds for {n} assets: need {1/n:.0%} between min and max weight')
+        raise ValueError(f'Infeasible bounds for {n} assets: need {1 / n:.0%} between min and max weight')
+    current = {h['ticker']: h.get('weight') for h in hs if h.get('weight')}
     px = fetch_prices(tickers + ['SPY'])
     r = px.pct_change().dropna().tail(lookback)
     tr = r.iloc[:-holdout] if holdout else r
     oos = r.iloc[-holdout:] if holdout else r.iloc[0:0]
-    mu, cov = tr[tickers].mean() * 252, tr[tickers].cov() * 252
-
-    def stats(w):
-        a, v = float(w @ mu.values), float(np.sqrt(w @ cov.values @ w))
-        return a, v, (a - rf) / v
-    cons = [{'type': 'eq', 'fun': lambda w: w.sum() - 1}]
-    b = [(lo, hi)] * n
+    mu, cov = tr[tickers].mean().values * 252, tr[tickers].cov().values * 252
     x0 = np.ones(n) / n
-    w = minimize(lambda w: -stats(w)[2], x0, bounds=b, constraints=cons, method='SLSQP').x
-    w = np.clip(w, lo, hi); w = w / w.sum()
-    mv = minimize(lambda w: stats(w)[1], x0, bounds=b, constraints=cons, method='SLSQP').x
-    mv = np.clip(mv, lo, hi); mv = mv / mv.sum()
-    fr = []
-    for t in np.linspace(mu.min() * 0.9, mu.max() * 0.9, 40):
-        c2 = cons + [{'type': 'eq', 'fun': lambda w, t=t: w @ mu.values - t}]
-        q = minimize(lambda w: w @ cov.values @ w, x0, bounds=b, constraints=c2, method='SLSQP')
-        if q.success:
-            fr.append([float(np.sqrt(q.fun)), float(t)])
+    w = _max_sharpe(mu, cov, rf, lo, hi)
+    mv = _min_var(cov, lo, hi)
+
+    def stats(wt):
+        a, v = float(wt @ mu), float(np.sqrt(wt @ cov @ wt))
+        return a, v, (a - rf) / v
+    fr = _frontier(mu, cov, lo, hi, [w, mv])
 
     def perf(pr):
         if len(pr) < 2:
@@ -773,14 +748,15 @@ def optimize(tickers, lo=0.05, hi=0.40, rf=0.036, holdout=20, lookback=504, curr
         cw = cw / cw.sum()
         cur = dict(zip(tickers, map(float, cw)))
         series = dict(Current=r[tickers] @ cw, **series)
-    curves = {k: [round(float(v), 4) for v in (1 + s).cumprod() / (1 + s.iloc[0])] for k, s in series.items()}
-    comp = {k: dict(train=perf(s.loc[tr.index]), holdout=perf(s.loc[oos.index]) if len(oos) else None) for k, s in series.items()}
-    pw = w @ cov.values @ w
-    rc = (w * (cov.values @ w)) / pw
+    curves = {k: [round(float(v), 4) for v in (1 + s_).cumprod() / (1 + s_.iloc[0])] for k, s_ in series.items()}
+    comp = {k: dict(train=perf(s_.loc[tr.index]), holdout=perf(s_.loc[oos.index]) if len(oos) else None) for k, s_ in series.items()}
+    pw = float(w @ cov @ w)
+    rc = (w * (cov @ w)) / pw
     a, v, sh = stats(w)
     return dict(tickers=tickers, current=cur, weights=dict(zip(tickers, map(float, w))), min_var=dict(zip(tickers, map(float, mv))),
                 expected=dict(ret=a, vol=v, sharpe=sh), risk=dict(zip(tickers, map(float, rc))), frontier=fr,
-                assets={t: dict(ret=float(mu[t]), vol=float(np.sqrt(cov.loc[t, t])), sharpe=float((mu[t] - rf) / np.sqrt(cov.loc[t, t]))) for t in tickers},
+                assets={t: dict(ret=float(mu[i]), vol=float(np.sqrt(cov[i, i])), sharpe=float((mu[i] - rf) / np.sqrt(cov[i, i])))
+                        for i, t in enumerate(tickers)},
                 dates=[str(d.date()) for d in r.index], curves=curves, compare=comp,
                 train=[str(tr.index[0].date()), str(tr.index[-1].date())],
                 holdout=[str(oos.index[0].date()), str(oos.index[-1].date())] if len(oos) else None,
@@ -1025,81 +1001,66 @@ def earnings_impact(co):
     return 1, 'in line, no change in guidance or tone'
 
 
-def analyze_earnings(cfg, log=print, progress=lambda f: None):
-    """Out-of-window stress test: each holding's most recent earnings report, scored on its reaction day."""
-    warnings = []
-    hs, market = cfg['holdings'], cfg.get('market', 'SPY')
-    px = fetch_prices([h['ticker'] for h in hs] + [market] + sorted({h['etf'] for h in hs}))
+def earnings_holding(holding, market='SPY'):
+    """Earnings stress test, one holding per request: most recent report -> reaction day -> transcript -> score.
+    Returns retry=True when Alpha Vantage's free-tier rate limit is hit, so the browser can wait and call again."""
+    h = normalize_holdings([holding])[0]
+    tk, warnings = h['ticker'], []
+    if not env('ALPHAVANTAGE_API_KEY'):
+        raise ValueError('The earnings stress test needs ALPHAVANTAGE_API_KEY (earnings and transcripts).')
+    px = fetch_prices([tk, market, h['etf']])
     rets = px.pct_change().iloc[1:]
     days = rets.index
-    key = env('ALPHAVANTAGE_API_KEY')
-    if not key:
-        raise ValueError('The earnings stress test needs ALPHAVANTAGE_API_KEY (earnings and transcripts).')
-    budget = Budget()
-    rows = []
-    for i, h in enumerate(hs):
-        tk = h['ticker']
+    budget = Budget(limit=3)
+    quiet = lambda m: None
+
+    def num(v):
         try:
-            log(f'Fetching earnings for {tk}…')
-            d = av_get(f'earnings_{tk}', dict(function='EARNINGS', symbol=tk), budget, log)
-            q = [x for x in (d or {}).get('quarterlyEarnings', []) if pd.Timestamp(x['reportedDate']) < days.max()]
-            if not q:
-                warnings.append(f'{tk}: no earnings report found.')
-                continue
-            q = sorted(q, key=lambda x: x['reportedDate'])[-1]
-            rep = pd.Timestamp(q['reportedDate'])
-            after = str(q.get('reportTime', '')).lower().startswith('post')
-            react = days[days > rep][0] if (after or rep not in days) and (days > rep).any() else rep
-            if react not in days:
-                warnings.append(f'{tk}: reaction day {react.date()} is outside the price data.')
-                continue
-            sp = split_day(rets, tk, h['etf'], market, react)
-            segs = None
-            qtr = _quarter_label(tk, q['fiscalDateEnding'])
-            log(f'Fetching {tk} {qtr} call transcript…')
-            t = av_get(f'transcript_{tk}_{qtr}', dict(function='EARNINGS_CALL_TRANSCRIPT', symbol=tk, quarter=qtr), budget, log)
-            if t and t.get('transcript'):
-                segs = t['transcript']
-            def num(v):
-                try:
-                    return float(v)
-                except (TypeError, ValueError):
-                    return None
-            rep_eps, est_eps, sur = num(q.get('reportedEPS')), num(q.get('estimatedEPS')), num(q.get('surprisePercentage'))
-            o = None
-            if segs and llm_provider():
-                o = llm(EARN_SYS, f"Company: {h['name']}\nThesis: {h['thesis']}\n\nTranscript excerpt:\n{_retrieve(segs)}", 700)
-            if not o:
-                o = dict(guidance='Not given', tone='n/a', tone_shift=False, metrics=f'Reported EPS {rep_eps} vs {est_eps} estimated',
-                         qa_theme='Transcript for this call not available' if not segs else 'n/a', new_vs_last='n/a', summary=[],
-                         one_line=f'EPS {rep_eps} vs {est_eps} estimated; ' + ('call transcript not available from the data source.' if not segs else 'call not analysed (no LLM key).'))
-                if not segs:
-                    warnings.append(f'{tk}: Alpha Vantage has no transcript for {qtr}; scored on EPS only.')
-            co = dict(type='Earnings call', timing='After close' if after else 'Before open', surprise=sur, guidance=o.get('guidance', 'Not given'),
-                      tone=o.get('tone', 'Neutral'), toneShift=bool(o.get('tone_shift')), metrics=o.get('metrics'), qa=o.get('qa_theme'),
-                      newVsLast=o.get('new_vs_last'), summary=o.get('summary') or [], newinfo=int(o.get('new_info') or 3),
-                      text=o.get('one_line'), title=f'{tk} earnings call ({q["reportedDate"]})', publisher='Alpha Vantage', url=None)
-            co['impact'], co['impactWhy'] = earnings_impact(co)
-            lvl = attention(sp['z'], co)
-            g = co['guidance'].lower() + ' guidance' if co['guidance'] != 'Not given' else 'guidance not stated'
-            rows.append(dict(ticker=tk, name=h['name'], etf=h['etf'], thesis_text=h['thesis'], level=lvl,
-                             headline=(f"Earnings call: EPS {sur:+.1f}% vs estimate, {g}" if sur is not None else 'Earnings call'),
-                             why=f"Earnings calls are the most direct read on the thesis. {co['text'] or ''}".strip(),
-                             thesis=int(o.get('thesis_relevance') or 3), split=sp, company=co, sector=None, macro=None, counts=[1, 1, 1],
-                             reaction_day=str(react.date())))
-        except Exception as e:
-            warnings.append(f'{tk}: earnings step failed: {e}')
-        progress(0.1 + 0.85 * (i + 1) / len(hs))
-    order = {'High': 0, 'Medium': 1, 'Low': 2}
-    rows.sort(key=lambda x: (order[x['level']], -x['thesis'], -abs(x['split']['z'])))
-    nxt = next_earnings([h['ticker'] for h in hs])
-    for x in rows:
-        x['next_earnings'] = nxt.get(x['ticker'])
-    cal = dict(summary="Out-of-window check: each holding's most recent earnings call. This tests whether the system flags company-driven moves "
-                       "when a company reports.",
-               events=[dict(time='Latest', name="Most recent earnings calls (each holding's own report date)", ch='Company',
-                            result='Report-day returns, transcripts from the earnings-call source')])
-    return dict(day='earnings', calendar=cal, context=[], rows=rows, warnings=warnings, stress=True, llm=llm_provider(), news=True)
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    try:
+        d = av_get(f'earnings_{tk}', dict(function='EARNINGS', symbol=tk), budget, quiet)
+        q = [x for x in (d or {}).get('quarterlyEarnings', []) if pd.Timestamp(x['reportedDate']) < days.max()]
+        if not q:
+            return dict(row=None, warnings=[f'{tk}: no earnings report found.'])
+        q = sorted(q, key=lambda x: x['reportedDate'])[-1]
+        rep = pd.Timestamp(q['reportedDate'])
+        after = str(q.get('reportTime', '')).lower().startswith('post')
+        react = days[days > rep][0] if (after or rep not in days) and (days > rep).any() else rep
+        if react not in days:
+            return dict(row=None, warnings=[f'{tk}: reaction day {react.date()} is outside the price data.'])
+        sp = split_day(rets, tk, h['etf'], market, react)
+        qtr = _quarter_label(tk, q['fiscalDateEnding'])
+        t = av_get(f'transcript_{tk}_{qtr}', dict(function='EARNINGS_CALL_TRANSCRIPT', symbol=tk, quarter=qtr), budget, quiet)
+    except RuntimeError as e:
+        if str(e).startswith('RATE_LIMIT'):
+            return dict(retry=True, row=None, warnings=[])
+        raise
+    segs = t['transcript'] if t and t.get('transcript') else None
+    rep_eps, est_eps, sur = num(q.get('reportedEPS')), num(q.get('estimatedEPS')), num(q.get('surprisePercentage'))
+    o = None
+    if segs and llm_provider():
+        o = llm(EARN_SYS, f"Company: {h['name']}\nThesis: {h['thesis']}\n\nTranscript excerpt:\n{_retrieve(segs)}", 700)
+    if not o:
+        o = dict(guidance='Not given', tone='n/a', tone_shift=False, metrics=f'Reported EPS {rep_eps} vs {est_eps} estimated',
+                 qa_theme='Transcript for this call not available' if not segs else 'n/a', new_vs_last='n/a', summary=[],
+                 one_line=f'EPS {rep_eps} vs {est_eps} estimated; ' + ('call transcript not available from the data source.'
+                                                                     if not segs else 'call not analysed (no LLM key).'))
+        if not segs:
+            warnings.append(f'{tk}: Alpha Vantage has no transcript for {qtr}; scored on EPS only.')
+    co = dict(type='Earnings call', timing='After close' if after else 'Before open', surprise=sur, guidance=o.get('guidance', 'Not given'),
+              tone=o.get('tone', 'Neutral'), toneShift=bool(o.get('tone_shift')), metrics=o.get('metrics'), qa=o.get('qa_theme'),
+              newVsLast=o.get('new_vs_last'), summary=o.get('summary') or [], newinfo=int(o.get('new_info') or 3),
+              text=o.get('one_line'), title=f'{tk} earnings call ({q["reportedDate"]})', publisher='Alpha Vantage', url=None)
+    co['impact'], co['impactWhy'] = earnings_impact(co)
+    g = co['guidance'].lower() + ' guidance' if co['guidance'] != 'Not given' else 'guidance not stated'
+    row = dict(ticker=tk, name=h['name'], etf=h['etf'], thesis_text=h['thesis'], level=attention(sp['z'], co),
+               headline=(f"Earnings call: EPS {sur:+.1f}% vs estimate, {g}" if sur is not None else 'Earnings call'),
+               why=f"Earnings calls are the most direct read on the thesis. {co['text'] or ''}".strip(),
+               thesis=int(o.get('thesis_relevance') or 3), split=sp, company=co, sector=None, macro=None, counts=[1, 1, 1],
+               reaction_day=str(react.date()))
+    return dict(row=row, warnings=warnings)
 
 
 # ----------------------------------------------------------------------------- portfolio overview

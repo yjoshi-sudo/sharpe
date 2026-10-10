@@ -183,6 +183,10 @@ svg{width:100%;height:auto;display:block}.lg{display:flex;gap:16px;flex-wrap:wra
     <button class="p ghost" id="useSample">Use the sample portfolio</button><a href="/sample.csv" style="font-size:14px">Download sample CSV</a><a href="/sample_brokerage.csv" style="font-size:14px">Download brokerage-style sample</a></div>
     <p class="sig" id="upmsg" style="margin:12px 0 0"></p>
   </div>
+  <div id="codeBox" class="panel hide" role="group" aria-labelledby="codeH">
+    <h3 id="codeH">Access code</h3><p class="sig" id="codeMsg" style="margin:0 0 10px">This site is password protected.</p>
+    <div class="ctl"><input class="field" id="code" type="password" autocomplete="current-password" aria-label="Access code" style="min-width:220px"><button class="p" id="codeGo" type="button">Unlock</button></div>
+  </div>
   <div id="preview" class="hide">
     <div id="upwarns"></div>
     <div class="panel"><h3>Review your holdings</h3><div style="overflow-x:auto"><table class="t" id="ptable"></table></div>
@@ -262,9 +266,15 @@ const $=id=>document.getElementById(id);
 const pct=v=>(v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(1)+"%";
 const pc=(x,d=1)=>(x*100).toFixed(d)+"%";
 const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-async function j(u,o){const r=await fetch(u,o);const d=await r.json();if(!r.ok)throw new Error(d.error||r.statusText);return d}
+let ACCESS="";try{ACCESS=sessionStorage.getItem("sharpe_code")||""}catch(e){}
+async function j(u,o){
+  o=o||{};o.headers=Object.assign({},o.headers||{},{"X-Access-Code":ACCESS});
+  const r=await fetch(u,o);let d={};try{d=await r.json()}catch(e){}
+  if(r.status===401){showCode("That access code was not accepted. Enter it to continue.");throw new Error(d.error||"Access code required")}
+  if(!r.ok)throw new Error(d.error||(r.status===504||r.status===500?"The server timed out on this step. Try again, or analyse fewer holdings.":r.status+" "+r.statusText));
+  return d}
 const post=(u,b)=>j(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
-let CFG=null;
+let CFG={market:"SPY",holdings:[]};   /* the browser holds the portfolio; the server is stateless */
 
 const TABS=[...document.querySelectorAll(".tabs button")];
 function selectTab(b,focus){
@@ -397,21 +407,64 @@ function render(res){
 
 /* ---------- run ---------- */
 let LAST=null;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const ORD={High:0,Medium:1,Low:2};
+const sortRows=rows=>rows.sort((a,b)=>ORD[a.level]-ORD[b.level]||b.thesis-a.thesis||Math.abs(b.split.z)-Math.abs(a.split.z));
+function progress(f,msg){$("prog").firstChild.style.width=Math.max(2,Math.min(100,f*100))+"%";if(msg){$("msg").textContent=msg;setBriefStatus("run",msg)}}
+async function pool(items,n,fn){const q=items.slice();await Promise.all(Array.from({length:Math.min(n,q.length)},async()=>{while(q.length)await fn(q.shift())}))}
+
+async function briefFor(day,hs){
+  progress(0.03,"Computing the market / sector / company split…");
+  const prep=await post("/api/day/prep",{day,holdings:hs,market:CFG.market});
+  progress(0.12,"Reading the day's economy-wide news…");
+  const mac=await post("/api/day/macro",{day,prev:prep.prev,holdings:hs});
+  const warn=[...(prep.warnings||[]),...(mac.warnings||[])],rows=[];let done=0;
+  const todo=hs.filter(h=>prep.splits[h.ticker]);
+  await pool(todo,3,async h=>{
+    progress(0.15+0.78*done/todo.length,`Reading news and filings for ${h.ticker}…`);
+    try{const r=await post("/api/day/holding",{day,prev:prep.prev,holding:h,split:prep.splits[h.ticker],macro_items:mac.items,cal_text:mac.cal_text});
+      rows.push(r.row);warn.push(...(r.warnings||[]))}
+    catch(e){warn.push(`${h.ticker}: skipped (${e.message})`)}
+    done++;progress(0.15+0.78*done/todo.length);
+  });
+  let nxt={};try{nxt=(await post("/api/next",{holdings:hs})).next||{}}catch(e){}
+  rows.forEach(r=>r.next_earnings=nxt[r.ticker]);
+  return{day,calendar:mac.calendar,context:mac.context,rows:sortRows(rows),warnings:[...new Set(warn)],stress:false};
+}
+
+async function earningsFor(hs){
+  const key="earn|"+hs.map(h=>h.ticker).join(",")+"|"+new Date().toISOString().slice(0,10);
+  try{const c=sessionStorage.getItem(key);if(c){const o=JSON.parse(c);progress(1,"Loaded from this session's cache.");return o}}catch(e){}
+  const rows=[],warn=[];
+  for(let i=0;i<hs.length;i++){
+    const h=hs[i];progress(0.05+0.9*i/hs.length,`Earnings call for ${h.ticker} (${i+1} of ${hs.length})…`);
+    let r,tries=0,t0=Date.now();
+    while(true){
+      try{r=await post("/api/earn/holding",{holding:h,market:CFG.market})}catch(e){warn.push(`${h.ticker}: ${e.message}`);r=null;break}
+      if(r.retry&&tries<3){tries++;progress(0.05+0.9*i/hs.length,`Alpha Vantage free-tier limit: waiting 20 s before retrying ${h.ticker}…`);await sleep(20000);t0=Date.now();continue}
+      break}
+    if(r&&r.row)rows.push(r.row);if(r)warn.push(...(r.warnings||[]));
+    if(r&&r.retry)warn.push(`${h.ticker}: skipped, Alpha Vantage rate limit (free tier is 5 calls a minute and 25 a day).`);
+    if(Date.now()-t0>2500&&i<hs.length-1)await sleep(18000);    /* uncached call: stay under 5 calls/minute */
+  }
+  let nxt={};try{nxt=(await post("/api/next",{holdings:hs})).next||{}}catch(e){}
+  rows.forEach(r=>r.next_earnings=nxt[r.ticker]);
+  const res={day:"earnings",calendar:{summary:"Out-of-window check: each holding's most recent earnings call. This tests whether the system flags company-driven moves when a company reports.",
+    events:[{time:"Latest",name:"Most recent earnings calls (each holding's own report date)",ch:"Company",result:"Report-day returns, transcripts from the earnings-call source"}]},
+    context:[],rows:sortRows(rows),warnings:[...new Set(warn)],stress:true};
+  try{if(rows.length)sessionStorage.setItem(key,JSON.stringify(res))}catch(e){}
+  return res;
+}
+
 async function runBrief(day,quiet){
-  $("run").disabled=true;$("warns").innerHTML="";$("prog").classList.remove("hide");$("prog").firstChild.style.width="2%";
-  $("msg").textContent=quiet?"Analysing the latest day for your holdings…":"Running…";
-  setBriefStatus("run","Analysing the latest day's news for your holdings…");
+  if(!CFG.holdings.length){$("msg").textContent="Upload a portfolio first.";return}
+  $("run").disabled=true;$("warns").innerHTML="";$("prog").classList.remove("hide");
+  setBriefStatus("run",quiet?"Analysing the latest day for your holdings…":"Running…");
+  progress(0.02,quiet?"Analysing the latest day for your holdings…":"Running…");
   let ok=false;
   try{
-    const {id}=await post("/api/analyze",{day});
-    while(true){
-      await new Promise(r=>setTimeout(r,1000));
-      const jb=await j("/api/job/"+id);
-      $("prog").firstChild.style.width=Math.max(2,jb.progress*100)+"%";
-      const lg=jb.log.length?jb.log[jb.log.length-1]:"Running…";$("msg").textContent=lg;setBriefStatus("run",lg);
-      if(jb.status==="done"){render(jb.result);LAST=jb.result;$("msg").textContent="";ok=true;break}
-      if(jb.status==="error")throw new Error(jb.error);
-    }
+    const res=day==="earnings"?await earningsFor(CFG.holdings):await briefFor(day,CFG.holdings);
+    render(res);LAST=res;$("msg").textContent="";ok=true;
   }catch(e){$("msg").textContent="Error: "+e.message;setBriefStatus("err","The brief could not be built: "+e.message)}
   $("run").disabled=false;$("prog").classList.add("hide");
   if(ok){drawComposition();setBriefStatus("done")}
@@ -421,7 +474,7 @@ $("run").onclick=()=>runBrief($("day").value);
 /* ---------- portfolio ---------- */
 $("opt").onclick=async()=>{
   $("omsg").textContent="Optimizing…";$("opt").disabled=true;
-  try{renderPort(await post("/api/optimize",{lo:$("lo").value/100,hi:$("hi").value/100,rf:$("rf").value/100,holdout:+$("ho").value}));$("omsg").textContent=""}
+  try{renderPort(await post("/api/optimize",{holdings:CFG.holdings,lo:$("lo").value/100,hi:$("hi").value/100,rf:$("rf").value/100,holdout:+$("ho").value}));$("omsg").textContent=""}
   catch(e){$("omsg").textContent="Error: "+e.message}
   $("opt").disabled=false;
 };
@@ -457,7 +510,7 @@ const sgn=v=>`<span class="${v>=0?"pos":"neg"}">${pct(v*100)}</span>`;
 async function loadOverview(force){
   if(OV_LOADED&&!force)return;
   $("ovout").innerHTML='<p class="sig">Loading portfolio overview…</p>';
-  try{renderOverview(await j("/api/overview"));OV_LOADED=true}catch(e){$("ovout").innerHTML='<div class="warn">Could not build the overview: '+esc(e.message)+'</div>'}
+  try{renderOverview(await post("/api/overview",{holdings:CFG.holdings}));OV_LOADED=true}catch(e){$("ovout").innerHTML='<div class="warn">Could not build the overview: '+esc(e.message)+'</div>'}
 }
 function renderOverview(D){
   const P=D.portfolio,S=D.spy,pos=D.positions;
@@ -555,10 +608,10 @@ function renderHold(){
 }
 function collect(){document.querySelectorAll("#hold .panel").forEach(c=>{const h=CFG.holdings[+c.dataset.i];c.querySelectorAll("[data-k]").forEach(el=>{h[el.dataset.k]=el.value})})}
 $("add").onclick=()=>{collect();CFG.holdings.push({ticker:"",etf:"SPY",name:"",thesis:"",chain:"",guide:["","",""],pattern:""});renderHold()};
-$("save").onclick=async()=>{
+$("save").onclick=()=>{
   collect();CFG.holdings=CFG.holdings.filter(h=>h.ticker.trim());
-  CFG.holdings.forEach(h=>{if(h.pattern&&!new RegExp(h.pattern,"i").test(h.name))h.pattern=""});
-  try{const r=await post("/api/config",CFG);CFG=r.cfg;renderHold();$("smsg").textContent="Saved."}catch(e){$("smsg").textContent="Error: "+e.message}
+  CFG.holdings.forEach(h=>{h.ticker=h.ticker.trim().toUpperCase();h.etf=(h.etf||"SPY").trim().toUpperCase()});
+  OV_LOADED=false;renderHold();$("smsg").textContent="Saved for this session. Re-run the brief to use the changes."
 };
 
 /* ---------- upload / start ---------- */
@@ -588,10 +641,10 @@ const drop=$("drop");
 ["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor="var(--company)"}));
 ["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.style.borderColor=""}));
 drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0];if(f)upload(f)});
-$("confirm").onclick=async()=>{
+$("confirm").onclick=()=>{
   const hs=PENDING.holdings.map(h=>({ticker:h.ticker,name:h.name,etf:h.etf,thesis:h.thesis||"",chain:h.chain||"",guide:["","",""],pattern:"",shares:h.shares,weight:h.weight}));
-  const r=await post("/api/config",{market:"SPY",holdings:hs});
-  CFG=r.cfg;LOADED=true;OV_LOADED=false;renderHold();$("grid").querySelectorAll(".item").forEach(n=>n.remove());$("summary").innerHTML="";$("macroSummary").textContent="Pick a trading day and run the analysis.";
+  CFG={market:"SPY",holdings:hs};
+  LOADED=true;OV_LOADED=false;renderHold();$("grid").querySelectorAll(".item").forEach(n=>n.remove());$("summary").innerHTML="";$("macroSummary").textContent="Pick a trading day and run the analysis.";
   $("pout").innerHTML="";LAST=null;OV_DATA=null;
   selectTab(TABS[0]);showStart(false);
   const first=$("day").options[0];if(first){$("day").value=first.value;runBrief(first.value,true)}
@@ -600,14 +653,24 @@ $("cancelUp").onclick=()=>{$("preview").classList.add("hide");if(CFG&&LOADED)sho
 $("reup").onclick=()=>{$("preview").classList.add("hide");showStart(true)};
 let LOADED=false;
 
-/* ---------- init ---------- */
-(async function(){
-  const c=await j("/api/config");CFG=c.cfg;LOADED=false;const s=c.status;   /* every visit starts at the upload page, even if a portfolio was saved earlier */
-  $("status").innerHTML=`<span class="chip ${s.news_blocked||!s.av?"no":"ok"}">News: ${s.av&&!s.news_blocked?"Alpha Vantage":"Google News (keyless)"}</span><span class="chip ${s.llm?"ok":"no"}">LLM: ${s.llm||"no key"}</span><span class="chip ok">Prices: Yahoo</span><span class="chip ok">Filings: SEC EDGAR</span>`;
-  renderHold();
-  showStart(true);
+/* ---------- access code + init ---------- */
+function showCode(msg){$("codeBox").classList.remove("hide");$("codeMsg").textContent=msg||"This site is password protected."}
+async function loadDays(){
   try{const d=await j("/api/days");$("day").innerHTML=d.days.slice().reverse().map(x=>`<option value="${x}">${new Date(x+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"})}</option>`).join("")+'<option value="earnings">Stress test: earnings calls</option>'}
   catch(e){$("msg").textContent="Could not load prices: "+e.message}
+}
+$("codeGo").onclick=async()=>{
+  ACCESS=$("code").value;try{sessionStorage.setItem("sharpe_code",ACCESS)}catch(e){}
+  $("codeBox").classList.add("hide");await loadDays();
+};
+$("code").addEventListener("keydown",e=>{if(e.key==="Enter")$("codeGo").click()});
+(async function(){
+  const c=await j("/api/config");LOADED=false;const s=c.status;   /* every visit starts at the upload page */
+  $("status").innerHTML=`<span class="chip ok">News: Google News (keyless)</span><span class="chip ${s.llm?"ok":"no"}">LLM: ${s.llm||"no key"}</span><span class="chip ${s.av?"ok":"no"}">Earnings data: ${s.av?"Alpha Vantage":"no key"}</span><span class="chip ok">Prices: Yahoo</span><span class="chip ok">Filings: SEC EDGAR</span>`;
+  renderHold();
+  showStart(true);
+  if(c.auth&&!ACCESS)showCode();
+  await loadDays();
 })();
 </script>
 </body>

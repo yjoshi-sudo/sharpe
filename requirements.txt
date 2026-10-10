@@ -2,4 +2,3 @@ flask>=3.0
 requests
 numpy
 pandas
-scipy

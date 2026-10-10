@@ -1,0 +1,6 @@
+.venv
+.env
+cache
+docs
+*.md
+.git

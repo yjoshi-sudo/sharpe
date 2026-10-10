@@ -22,11 +22,12 @@ Built for the *AI Methods* final project at Carnegie Mellon Tepper (team: Evelyn
 8. [API reference](#api-reference)
 9. [Input formats](#input-formats)
 10. [Data sources and rate limits](#data-sources-and-rate-limits)
-11. [Design decisions](#design-decisions)
-12. [Known limitations](#known-limitations)
-13. [Security and privacy](#security-and-privacy)
-14. [Troubleshooting](#troubleshooting)
-15. [Roadmap](#roadmap)
+11. [Deploying to Vercel](#deploying-to-vercel)
+12. [Design decisions](#design-decisions)
+13. [Known limitations](#known-limitations)
+14. [Security and privacy](#security-and-privacy)
+15. [Troubleshooting](#troubleshooting)
+16. [Roadmap](#roadmap)
 
 ---
 
@@ -68,7 +69,7 @@ python app.py
 
 Open **http://127.0.0.1:5057**. To use a different port: `PORT=8000 python app.py`.
 
-Try it without your own data: on the first screen click **Use the sample portfolio**, or upload `sample_portfolio.csv` / `sample_brokerage_export.csv` from this repo.
+Try it without your own data: on the first screen click **Use the sample portfolio**, or download and upload `public/sample.csv` or `public/sample_brokerage.csv` from this repo.
 
 The app works with **no keys at all** (prices, return split, SEC filings and the portfolio overview are keyless); keys unlock news scoring and summaries. See the table below.
 
@@ -82,16 +83,16 @@ Copy `.env.example` to `.env`. Every key is optional; a missing key disables onl
 |---|---|---|
 | `OPENROUTER_API_KEY` **or** `ANTHROPIC_API_KEY` | Classifying and scoring news, writing summaries, earnings-call analysis | OpenRouter is checked first. |
 | `SHARPE_MODEL` | Choosing the model | Default `anthropic/claude-haiku-4.5` (OpenRouter) or `claude-haiku-4-5-20251001` (Anthropic). |
-| `ALPHAVANTAGE_API_KEY` | Earnings reports and call transcripts (free tier works); better news if the key is premium | Free tier: 25 calls/day, 5/min. |
+| `ALPHAVANTAGE_API_KEY` | Earnings reports, call transcripts and next-earnings dates (free tier works) | Free tier: 25 calls/day, 5/min. |
 | `SEC_EMAIL` | SEC EDGAR | EDGAR asks for a contact address in the User-Agent. |
-| `AV_PAUSE` | Pacing | Seconds between uncached Alpha Vantage calls (default `12`). |
+| `SHARPE_PASSWORD` | Access control | If set, every data endpoint requires this code (the page asks for it once). **Set it on any shared deployment.** |
 | `PORT` | Server port | Default `5057`. |
 
 What works without each key:
 
 | Missing | What happens |
 |---|---|
-| Alpha Vantage key | News falls back to Google News RSS; the earnings stress test is unavailable. |
+| Alpha Vantage key | The earnings stress test and next-earnings dates are unavailable (news never needed it). |
 | LLM key | Return split, filings and portfolio overview still work; articles are not classified or summarized. |
 | Both | Return split, SEC filings, portfolio overview and the what-if tool. |
 
@@ -120,7 +121,7 @@ flowchart LR
     A[Portfolio CSV] --> B[Parse + enrich<br/>names, sector ETFs, weights]
     B --> C[Prices<br/>Yahoo adjusted closes]
     C --> D[Two-factor return split<br/>market / sector / company-specific, σ]
-    B --> E[News<br/>Google News RSS or Alpha Vantage]
+    B --> E[News<br/>Google News RSS]
     B --> F[SEC EDGAR<br/>8-K / 6-K + item codes]
     E --> G[LLM classify<br/>company / sector / macro / not relevant]
     G --> H[LLM score<br/>impact, new info, thesis relevance]
@@ -187,37 +188,43 @@ The donut is colored by attention (red High, amber Medium, green Low, gray not c
 
 ```
 .
-├── app.py                      # Flask server and JSON API
-├── core.py                     # All logic: prices, return split, news, SEC, LLM, attention rule, earnings, overview, optimizer, CSV parsing
-├── templates/index.html        # Single-page UI (HTML + CSS + vanilla JS, no build step)
-├── holdings.default.json       # Default theses, value chains, macro calendar (Sep 11–17, 2026) and context events
-├── sample_portfolio.csv        # Mock portfolio (8 stocks) for testing
-├── sample_brokerage_export.csv # Mock broker "positions" export (title lines, cash and total rows, money-market fund)
-├── requirements.txt
+├── app.py                  # Flask app: stateless JSON API; also serves public/ when run locally
+├── core.py                 # All logic: prices, return split, news, SEC, LLM, attention rule, earnings, overview, optimizer, CSV parsing
+├── defaults.py             # Baked-in macro calendar, context events, and thesis notes for the original five tickers
+├── public/
+│   ├── index.html          # Single-page UI (HTML + CSS + vanilla JS, no build step)
+│   ├── sample.csv          # Mock portfolio (8 stocks)
+│   └── sample_brokerage.csv# Mock broker "positions" export (title lines, cash and total rows, money-market fund)
+├── api/index.py            # Vercel entry point (imports the Flask app)
+├── vercel.json             # Function timeout and /api rewrite
+├── requirements.txt        # flask, requests, numpy, pandas (no scipy: keeps the serverless bundle small)
 ├── .env.example
 └── docs/screenshots/
 ```
 
-Runtime files (git-ignored): `.env`, `holdings.json` (your confirmed portfolio), `cache/` (API and LLM responses).
+The server **stores nothing about you**. The browser holds the portfolio and sends it with each request, so one deployment can serve several people at once. The only server-side state is a best-effort cache of API and LLM responses in a temp directory (`cache/` locally, `/tmp` on Vercel).
 
 ---
 
 ## API reference
 
-All endpoints are local; there is no authentication (see [Security](#security-and-privacy)).
+If `SHARPE_PASSWORD` is set, send it in the `X-Access-Code` header on every `/api/*` call except `/api/config`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` | The UI |
-| GET | `/api/config` | Current holdings and which keys are configured |
-| POST | `/api/config` | Save holdings (`{market, holdings:[…]}`) |
-| POST | `/api/upload` | Parse a CSV (multipart `file` or JSON `{csv}`); returns holdings and warnings, saves nothing |
+| GET | `/api/config` | Which keys are configured, and whether an access code is required |
+| GET | `/api/days` | Last ~60 trading days |
+| POST | `/api/upload` | Parse a CSV (multipart `file` or JSON `{csv}`); returns holdings and warnings |
+| POST | `/api/day/prep` | Brief step 1: `{day, holdings}` → return split for every holding, previous trading day |
+| POST | `/api/day/macro` | Brief step 2: `{day, prev, holdings}` → macro headlines, calendar entry, one-line macro summary |
+| POST | `/api/day/holding` | Brief step 3, **one request per holding**: news + SEC filings → classify → score → attention → summary |
+| POST | `/api/next` | Next earnings dates |
+| POST | `/api/earn/holding` | Earnings stress test for one holding (`retry: true` if Alpha Vantage's rate limit was hit) |
+| POST | `/api/overview` | Portfolio overview data |
+| POST | `/api/optimize` | Optional what-if: `{holdings, lo, hi, rf, holdout}` |
 | GET | `/sample.csv`, `/sample_brokerage.csv` | Sample files |
-| GET | `/api/days` | Last ~60 trading days available |
-| POST | `/api/analyze` | Start a brief: `{day: "YYYY-MM-DD"}` or `{day: "earnings"}`; returns a job id |
-| GET | `/api/job/<id>` | Job status, progress, log, and result |
-| GET | `/api/overview` | Portfolio overview data |
-| POST | `/api/optimize` | What-if optimizer: `{lo, hi, rf, holdout}` |
+
+A brief is assembled **in the browser** from steps 1 to 3, which is what keeps every request short (about 10 seconds per holding) and the server stateless.
 
 ---
 
@@ -245,12 +252,41 @@ Weights come from `weight`, else `value`, else shares × latest price, else equa
 | Data | Source | Key | Notes |
 |---|---|---|---|
 | Prices (adjusted) | Yahoo Finance chart endpoint | none | Unofficial; may throttle heavy use |
-| News | Google News RSS (fallback) or Alpha Vantage `NEWS_SENTIMENT` | none / AV | AV news is premium on many keys; Sharpe detects that and remembers it |
+| News | Google News RSS | none | Headlines only, no per-ticker relevance or sentiment. (Alpha Vantage news needs a premium key, so it is not used.) |
 | SEC filings | SEC EDGAR (`data.sec.gov`) | none (needs contact email) | 8-K and 6-K with item codes |
 | Earnings, transcripts, calendar | Alpha Vantage | AV (free OK) | ~2 calls per holding; paced at 12 s |
 | LLM | OpenRouter or Anthropic | yes | Temperature 0, JSON output, cached |
 
-Everything is cached under `cache/` (including LLM answers keyed by model and prompt), so re-running a day costs nothing after the first time.
+Responses (including LLM answers keyed by model and prompt) are cached in a temp directory, so re-running a day is cheap locally. On Vercel the cache is per instance and best effort.
+
+---
+
+## Deploying to Vercel
+
+Vercel runs Python as short-lived serverless functions, so Sharpe is built for that: no server-side state, one short request per step, and no scipy.
+
+1. **Push this repository to GitHub** (the `vercel` branch, or merge it into `main`).
+2. In Vercel: **Add New → Project**, import the repository. Framework preset **Other**. Leave build and output settings empty.
+3. **Settings → Environment Variables** (Production, and Preview if you use it):
+
+   | Name | Value |
+   |---|---|
+   | `SHARPE_PASSWORD` | A code your group will type once. **Required for any shared link**, otherwise anyone with the URL can spend your LLM credit. |
+   | `OPENROUTER_API_KEY` or `ANTHROPIC_API_KEY` | LLM key |
+   | `ALPHAVANTAGE_API_KEY` | Optional: earnings stress test and next-earnings dates |
+   | `SEC_EMAIL` | Your contact address for SEC EDGAR |
+
+4. **Deploy.** Open the URL, enter the access code, upload a portfolio.
+
+Or from a terminal: `npm i -g vercel`, then `vercel` (preview) and `vercel --prod`; add variables with `vercel env add NAME`.
+
+Things that behave differently on Vercel:
+
+* **Time limit.** `vercel.json` asks for 60 seconds per function. Each holding takes roughly 10 seconds, but your plan's maximum applies; if a step times out, the page says so and the brief shows the other holdings.
+* **Caching.** `/tmp` is per instance and may be empty on a cold start, so repeat runs can cost more LLM calls. The earnings stress test also caches its result in the browser for the session, which protects Alpha Vantage's 25-calls-a-day limit.
+* **Alpha Vantage pacing** (5 calls a minute) is handled by the page, which waits between holdings during the stress test, so that test is slow by design.
+* **Static files** (`public/`) are served by Vercel's CDN; only `/api/*` runs Python.
+* **Not verified on Vercel by the author.** The same stateless API was tested locally end to end, but the first real deploy may need small adjustments (for example the function size limit or plan time limits). Check the function logs under **Deployments → Functions**.
 
 ---
 
@@ -269,7 +305,7 @@ Everything is cached under `cache/` (including LLM answers keyed by model and pr
 
 * **Keyless news is noisy.** Google News gives headlines only, with no per-ticker relevance or sentiment, so some items are mis-layered (e.g. a Fed story filed as company news). Premium Alpha Vantage news is better.
 * **"Macro today" for uncovered days** is LLM-written from headlines and can pick up stale stories. The built-in macro calendar covers only Sep 11–17, 2026 (the original project window).
-* **Single shared state.** The confirmed portfolio is saved server-side in one `holdings.json`; the app is built for one user at a time on a local machine.
+* **Portfolio lives in the browser tab.** Reloading the page returns to the upload screen by design; nothing is saved on the server.
 * **Short windows.** The regression uses 120 days; the 2σ threshold produces some false flags by design.
 * **Sector leakage** for stocks that dominate their own sector ETF (NVDA/TSM in SMH).
 * **Free-tier limits.** Alpha Vantage allows 25 calls/day, so the earnings stress test on a large portfolio can take several minutes and may need to be spread across days.
@@ -279,7 +315,7 @@ Everything is cached under `cache/` (including LLM answers keyed by model and pr
 
 ## Security and privacy
 
-* The server has **no authentication** and binds to `127.0.0.1`. Do not expose it to the internet as is: anyone with access could spend your API credits. If you deploy it, add authentication and per-user storage first.
+* Locally the server binds to `127.0.0.1`. On a deployment, **set `SHARPE_PASSWORD`**: it gates every data endpoint. It is a single shared code, not per-user accounts, and the static page itself is public (it shows nothing until the code is accepted).
 * Your portfolio and uploaded files stay on your machine, except that ticker symbols and article text are sent to the data and LLM providers to do the analysis.
 * API keys live only in `.env` or environment variables. If a key was ever pasted into a chat, issue, or commit, revoke and reissue it.
 
@@ -290,12 +326,13 @@ Everything is cached under `cache/` (including LLM answers keyed by model and pr
 | Symptom | Fix |
 |---|---|
 | `Address already in use` | Another copy is running: stop it, or use `PORT=8000 python app.py`. |
-| "NEWS_SENTIMENT is a premium endpoint" | Your Alpha Vantage key is free tier. The app falls back to Google News automatically; delete `cache/av_news_blocked` after switching to a premium key. |
 | Everything shows Low with no news | Check the status chips at the bottom: LLM key missing, or news fetch failed (see the yellow notices). |
 | Upload says "No ticker column" | Rename a column to `ticker` or `symbol`. |
 | A ticker is skipped | Yahoo has no price history for it (money-market fund, option, delisted symbol). |
-| Slow first run | The first run of each day fetches news and calls the LLM; later runs are cached. |
-| Alpha Vantage "rate limit" messages | Free tier is 5 calls/min and 25/day; wait, or raise `AV_PAUSE`. |
+| Slow first run | Each holding's news and LLM calls take about 10 seconds the first time. |
+| "The server timed out on this step" (Vercel) | Your plan's function time limit was hit. Retry, or check **Deployments → Functions** logs. |
+| The page asks for an access code | `SHARPE_PASSWORD` is set on the server: enter it once (it is kept for the browser session). |
+| Alpha Vantage "rate limit" messages | Free tier is 5 calls/min and 25/day. The stress test paces itself and retries; if it still skips a holding, wait a minute and run again. |
 
 ---
 
