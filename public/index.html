@@ -189,15 +189,15 @@ body.landing header{display:none}
     <p class="macro-summary">Start by uploading your portfolio.</p>
     <p style="margin:0;font-size:14px">A CSV with one row per holding, or a positions export straight from your broker (Symbol, Description, Quantity, Market Value…; title, cash and total rows are skipped). Only <b>ticker</b> is required. Optional columns: <b>shares</b> (or <b>weight</b> / <b>value</b>), <b>name</b>, <b>sector_etf</b>, <b>thesis</b>, <b>value_chain</b>. Missing names and sector ETFs are looked up for you.</p>
   </section>
+  <div id="codeBox" class="panel hide" role="group" aria-labelledby="codeH">
+    <h3 id="codeH">Access code</h3><p class="sig" id="codeMsg" style="margin:0 0 10px">This site is password protected.</p>
+    <div class="ctl"><input class="field" id="code" type="password" autocomplete="current-password" aria-label="Access code" style="min-width:220px"><button class="p" id="codeGo" type="button">Unlock</button></div>
+  </div>
   <div class="panel" id="drop" style="text-align:center;padding:30px 20px;border-style:dashed">
     <p style="margin:0 0 12px">Drag a CSV here, or</p>
     <div class="ctl" style="justify-content:center"><label class="p" style="cursor:pointer;display:inline-block;padding:12px 26px;font-size:17px">Upload CSV<input type="file" id="file" accept=".csv,text/csv" style="display:none"></label>
     <button class="p ghost" id="useSample">Use the sample portfolio</button><a href="/sample.csv" style="font-size:14px">Download sample CSV</a><a href="/sample_brokerage.csv" style="font-size:14px">Download brokerage-style sample</a></div>
     <p class="sig" id="upmsg" style="margin:12px 0 0"></p>
-  </div>
-  <div id="codeBox" class="panel hide" role="group" aria-labelledby="codeH">
-    <h3 id="codeH">Access code</h3><p class="sig" id="codeMsg" style="margin:0 0 10px">This site is password protected.</p>
-    <div class="ctl"><input class="field" id="code" type="password" autocomplete="current-password" aria-label="Access code" style="min-width:220px"><button class="p" id="codeGo" type="button">Unlock</button></div>
   </div>
   <div id="preview" class="hide">
     <div id="upwarns"></div>
@@ -675,14 +675,15 @@ $("reup").onclick=()=>{$("preview").classList.add("hide");showStart(true)};
 let LOADED=false;
 
 /* ---------- access code + init ---------- */
-function showCode(msg){$("codeBox").classList.remove("hide");$("codeMsg").textContent=msg||"This site is password protected."}
+function lockUpload(on){const d=$("drop");d.style.opacity=on?".45":"";d.style.pointerEvents=on?"none":"";d.setAttribute("aria-disabled",on)}
+function showCode(msg){lockUpload(true);$("codeBox").classList.remove("hide");$("codeMsg").textContent=msg||"This site is password protected."}
 async function loadDays(){
   try{const d=await j("/api/days");$("day").innerHTML=d.days.slice().reverse().map(x=>`<option value="${x}">${new Date(x+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"})}</option>`).join("")+'<option value="earnings">Stress test: earnings calls</option>'}
   catch(e){$("msg").textContent="Could not load prices: "+e.message}
 }
 $("codeGo").onclick=async()=>{
   ACCESS=$("code").value.trim();try{sessionStorage.setItem("sharpe_code",ACCESS)}catch(e){}
-  $("codeBox").classList.add("hide");await loadDays();
+  $("codeBox").classList.add("hide");lockUpload(false);$("msg").textContent="";$("upmsg").textContent="";await loadDays();
 };
 $("code").addEventListener("keydown",e=>{if(e.key==="Enter")$("codeGo").click()});
 (async function(){
