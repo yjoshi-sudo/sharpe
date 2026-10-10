@@ -280,7 +280,7 @@ const pc=(x,d=1)=>(x*100).toFixed(d)+"%";
 const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 let ACCESS="";try{ACCESS=sessionStorage.getItem("sharpe_code")||""}catch(e){}
 async function j(u,o){
-  o=o||{};o.headers=Object.assign({},o.headers||{},{"X-Access-Code":ACCESS});
+  o=o||{};o.headers=Object.assign({},o.headers||{},{"X-Access-Code":ACCESS.trim()});
   const r=await fetch(u,o);let d={};try{d=await r.json()}catch(e){}
   if(r.status===401){showCode("That access code was not accepted. Enter it to continue.");throw new Error(d.error||"Access code required")}
   if(!r.ok)throw new Error(d.error||(r.status===504||r.status===500?"The server timed out on this step. Try again, or analyse fewer holdings.":r.status+" "+r.statusText));
@@ -681,7 +681,7 @@ async function loadDays(){
   catch(e){$("msg").textContent="Could not load prices: "+e.message}
 }
 $("codeGo").onclick=async()=>{
-  ACCESS=$("code").value;try{sessionStorage.setItem("sharpe_code",ACCESS)}catch(e){}
+  ACCESS=$("code").value.trim();try{sessionStorage.setItem("sharpe_code",ACCESS)}catch(e){}
   $("codeBox").classList.add("hide");await loadDays();
 };
 $("code").addEventListener("keydown",e=>{if(e.key==="Enter")$("codeGo").click()});
